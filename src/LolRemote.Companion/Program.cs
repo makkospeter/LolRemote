@@ -33,7 +33,24 @@ string? fixedLockfile = lockfileArg >= 0 && lockfileArg + 1 < args.Length
         : null;
 
 var debugArg = Array.IndexOf(args, "--debug-dir");
-var debugDump = debugArg >= 0 && debugArg + 1 < args.Length ? new DebugDump(args[debugArg + 1]) : null;
+var explicitDebug = debugArg >= 0 && debugArg + 1 < args.Length;
+var debugDump = explicitDebug ? new DebugDump(args[debugArg + 1]) : null;
+if (debugDump is null && guiMode)
+{
+    try
+    {
+        var debugRoot = Path.Combine(AppPaths.Folder, "debug");
+        Directory.CreateDirectory(debugRoot);
+        foreach (var old in new DirectoryInfo(debugRoot).GetDirectories().OrderByDescending(d => d.Name).Skip(9))
+        {
+            try { old.Delete(true); } catch (Exception) { }
+        }
+        debugDump = new DebugDump(debugRoot);
+    }
+    catch (Exception)
+    {
+    }
+}
 
 if (args.Contains("--selftest"))
 {
@@ -171,7 +188,7 @@ async Task ConnectionLoopAsync(CancellationToken ct)
         if (debugDump is not null)
         {
             lcu.EventReceived += debugDump.Write;
-            log.Add($"Diagnosztikai mentés: {debugDump.Folder}", ConsoleColor.DarkGray);
+            if (explicitDebug) log.Add($"Diagnosztikai mentés: {debugDump.Folder}", ConsoleColor.DarkGray);
         }
         try
         {

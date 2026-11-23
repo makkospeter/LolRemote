@@ -61,8 +61,10 @@ app.MapGet("/lol-champ-select/v1/session", (MockEngine engine) =>
 app.MapPatch("/lol-champ-select/v1/session/actions/{id:int}", (int id, ActionPatch body, MockEngine engine) =>
     ToResult(engine.PatchAction(id, body.ChampionId, body.Completed)));
 
-app.MapPost("/lol-champ-select/v1/session/actions/{id:int}/complete", () =>
-    Results.BadRequest(new { message = "Az igazi kliens ezzel a végponttal nem lockol (mock)." }));
+app.MapPost("/lol-champ-select/v1/session/actions/{id:int}/complete", (int id, MockEngine engine) =>
+    engine.StrictLock
+        ? ToResult(engine.PatchAction(id, null, true, fromComplete: true))
+        : Results.BadRequest(new { message = "Az igazi kliens ezzel a végponttal nem lockol (mock)." }));
 
 app.MapGet("/lol-perks/v1/recommended-pages/champion/{championId:int}/position/{position}/map/{mapId:int}",
     (int championId, string position, int mapId, MockRunes runes) => Results.Json(runes.Recommended(championId, position), MockEngine.JsonOptions));
@@ -80,7 +82,7 @@ foreach (var verb in new[] { "request", "accept", "decline", "cancel" })
 {
     app.MapPost($"/lol-champ-select/v1/session/trades/{{id:int}}/{verb}", (int id, MockEngine engine) =>
         ToResult(engine.SwapCommand(true, id, verb)));
-    app.MapPost($"/lol-champ-select/v1/session/swaps/{{id:int}}/{verb}", (int id, MockEngine engine) =>
+    app.MapPost($"/lol-champ-select/v1/session/pick-order-swaps/{{id:int}}/{verb}", (int id, MockEngine engine) =>
         ToResult(engine.SwapCommand(false, id, verb)));
 }
 
@@ -133,6 +135,7 @@ app.MapGet("/lol-perks/v1/styles", () =>
 
 var engine = app.Services.GetRequiredService<MockEngine>();
 engine.Practice = args.Contains("--practice");
+engine.StrictLock = args.Contains("--strict-lock");
 var lifetime = app.Lifetime;
 
 lifetime.ApplicationStarted.Register(() =>

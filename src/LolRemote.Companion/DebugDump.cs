@@ -31,7 +31,7 @@ public sealed class DebugDump
     {
         lock (_lock)
         {
-            if (_count >= 300) return;
+            if (_count >= 1500) return;
             _count++;
             var safe = new string(name.Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_').ToArray());
             try
@@ -52,7 +52,7 @@ public sealed class DebugDump
         {
             var isSession = uri == "/lol-champ-select/v1/session";
             if (!isSession && !_seen.Add($"{uri}|{eventType}")) return;
-            if (_count >= 300) return;
+            if (_count >= 1500) return;
             _count++;
             var safe = new string(uri.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray()).Trim('_');
             var file = Path.Combine(Folder, $"{_count:D3}-{DateTime.Now:HHmmss}-{eventType}-{safe}.json");

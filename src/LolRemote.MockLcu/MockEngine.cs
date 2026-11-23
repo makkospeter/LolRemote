@@ -189,7 +189,7 @@ public class MockEngine
     {
         lock (_lock)
         {
-            if (_session is null) return AllChampionIds.ToArray();
+            if (_session is null || StrictLock) return AllChampionIds.ToArray();
             return AllChampionIds.Where(c => IsAvailable(c, type)).ToArray();
         }
     }
@@ -221,8 +221,11 @@ public class MockEngine
         }
     }
 
-    public string? PatchAction(int actionId, int? championId, bool? completed)
+    public bool StrictLock { get; set; }
+
+    public string? PatchAction(int actionId, int? championId, bool? completed, bool fromComplete = false)
     {
+        if (StrictLock && !fromComplete && completed == true) completed = null;
         lock (_lock)
         {
             if (_session is null) return "Nincs champ select.";

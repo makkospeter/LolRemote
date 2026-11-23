@@ -370,3 +370,13 @@ body.embed { background: transparent; }
 .trouble b { color: var(--amber); }
 .trouble ul { margin: 8px 0 0; padding-left: 18px; }
 .trouble li { margin-bottom: 6px; }
+button.counter-row { width: 100%; border: 1px solid rgba(10, 200, 185, 0.25); background: rgba(10, 200, 185, 0.05); border-radius: 12px; padding: 7px 10px; margin: 4px 0; text-align: left; }
+button.counter-row:active { background: rgba(10, 200, 185, 0.15); }
+.counter-name small { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
+.pick-tag { font-size: 11px; font-weight: 800; color: var(--teal); letter-spacing: 0.04em; white-space: nowrap; }
+.confirm { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 0 6px; text-align: center; }
+.confirm h2 { margin: 4px 0 0; font-size: 24px; }
+.confirm p { margin: 0 0 6px; color: var(--muted); }
+.confirm .btn { width: 100%; }
+.avatar.xl { width: 96px; height: 96px; border-radius: 20px; }
+.avatar.xl::before { font-size: 30px; }

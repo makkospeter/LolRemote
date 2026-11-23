@@ -64,6 +64,10 @@ const yasuoOnly = await page.$$eval('.champ', els => els.map(e => e.textContent.
 check(`Keresés szűr (yas → ${yasuoOnly.join(',')})`, yasuoOnly.length === 1 && yasuoOnly[0] === 'Yasuo');
 await shot('06-kereses');
 await page.click('.champ');
+await page.waitForSelector('.confirm >> text=Yasuo');
+check('Champion választás után megerősítő ablak jön (BAN gombbal)', await page.isVisible('[data-action=confirm-lock] >> text=BAN'));
+await shot('06b-megerosites');
+await page.click('.confirm [data-action=close-sheet]');
 await page.waitForSelector('.turn-choice >> text=Yasuo');
 check('Hover után a kijelölt champion látszik', true);
 
@@ -76,13 +80,21 @@ check('Keresés bezárása után a kijelölés megmarad', await page.isVisible('
 await page.click('[data-action=lock]');
 await page.waitForSelector('text=TE JÖSSZ · PICK');
 check('Ban lockolás után pick kör', true);
+await page.waitForSelector('button.counter-row');
+const counterNames = await page.$$eval('.counters .counter-name', els => els.map(e => e.firstChild.textContent.trim()));
+check(`Bannolt (Yasuo) és foglalt champion nincs a counterek között (${counterNames.join(',')})`, !counterNames.includes('Yasuo') && !counterNames.includes('Teemo') && !counterNames.includes('Lux'));
+await shot('07a-counter-kattinthato');
+await page.click('button.counter-row >> nth=0');
+await page.waitForSelector('.confirm [data-action=confirm-lock]');
+check('Counterre koppintva kijelöli és rákérdez a lockra', await page.isVisible('.confirm >> text=LOCK IN'));
+await page.click('.confirm [data-action=close-sheet]');
 await page.click('[data-action=open-champs]');
 await page.waitForSelector('.champ');
 await page.fill('[data-search]', 'ah');
 await page.click('.champ >> text=Ahri');
-await page.waitForSelector('.turn-choice >> text=Ahri');
+await page.waitForSelector('.confirm >> text=Ahri');
 await shot('07-pick-hover');
-await page.click('[data-action=lock]');
+await page.click('[data-action=confirm-lock]');
 await page.waitForSelector('text=MINDEN PICK KÉSZ');
 check('Pick lock után finalization', true);
 check('Bejövő csere kérés kártya', await page.isVisible('text=champion cserét kér'));
@@ -95,8 +107,10 @@ check('Nincs OP.GG-re átdobó link', (await page.locator('.counters a').count()
 check('Kijelöl gomb nincs, ha nem én pickelek', (await page.locator('[data-action=hover-counter]').count()) === 0);
 await shot('08c-matchup');
 await page.click('[data-action=toggle-counters]');
-await page.waitForFunction(() => document.querySelectorAll('.counters .counter-row').length === 11);
-check('"Összes mutatása" lenyitja a teljes listát (11)', true);
+await page.waitForFunction(() => document.querySelectorAll('.counters .counter-row').length > 5);
+const fullCount = await page.locator('.counters .counter-row').count();
+const allNames = await page.$$eval('.counters .counter-name', els => els.map(e => e.firstChild.textContent.trim()));
+check(`"Összes mutatása" lenyitja a teljes listát (${fullCount}), bannolt/foglalt nélkül`, !allNames.some(n => ['Yasuo', 'Teemo', 'Annie', 'Lux', 'Ezreal', 'Thresh'].includes(n)));
 await shot('08d-matchup-osszes');
 await page.click('[data-action=toggle-counters]');
 await page.waitForFunction(() => document.querySelectorAll('.counters .counter-row').length === 5);
@@ -176,11 +190,11 @@ await shot('12-jatekban');
 
 const commands = await (await fetch(`${base}/__test/commands`)).json();
 const sequence = commands.map(c => c.cmd).filter(c => !['counters', 'build', 'rune-recommendations'].includes(c)).join(',');
-check(`Parancsok sorrendje: ${sequence}`, sequence === 'setting,setting,accept,champions,hover,champions,lock,champions,hover,lock,template-save,template-apply,spells,spells,rune-apply-recommended,rune,spells,rune-apply-recommended,swap');
+check(`Parancsok sorrendje: ${sequence}`, sequence === 'setting,setting,accept,champions,hover,champions,lock,hover,champions,hover,lock,template-save,template-apply,spells,spells,rune-apply-recommended,rune,spells,rune-apply-recommended,swap');
 const spellCmds = commands.filter(c => c.cmd === 'spells').map(c => `${c.spell1}/${c.spell2}`);
 check(`Spell parancsok: ${spellCmds.join(' ')}`, spellCmds.join(' ') === '4/12 12/4 14/4');
 const builds = commands.filter(c => c.cmd === 'build').map(c => c.opponentId);
-check(`Build kérések (ellenfél): ${builds.join(',')}`, builds.includes(0) && builds.includes(17) && builds.includes(99));
+check(`Build kérések (ellenfél): ${builds.join(',')}`, builds.includes(17) && builds.includes(99));
 
 const fresh = await browser.newContext({ ...devices['iPhone 13'] });
 const qrPage = await fresh.newPage();

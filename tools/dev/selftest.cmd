@@ -4,6 +4,7 @@ cd /d "%~dp0..\.."
 if not exist logs mkdir logs
 set "MOCKARGS="
 if /i "%~1"=="practice" set "MOCKARGS=--practice"
+if /i "%~1"=="strict" set "MOCKARGS=--strict-lock"
 if exist logs\selftest-result.txt del logs\selftest-result.txt
 echo RUNNING> logs\selftest-status.txt
 echo === LolRemote onteszt ===

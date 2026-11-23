@@ -304,6 +304,39 @@ public sealed class ChampSelectController
 
     public ChampSelectAction? MyCurrentAction() => MyActionIn(Session);
 
+    public (HashSet<int> MyBans, HashSet<int> TheirBans) BannedChampions()
+    {
+        var mine = new HashSet<int>();
+        var theirs = new HashSet<int>();
+        var s = Session;
+        if (s is null) return (mine, theirs);
+        foreach (var id in s.Bans?.MyTeamBans ?? new List<int>()) if (id > 0) mine.Add(id);
+        foreach (var id in s.Bans?.TheirTeamBans ?? new List<int>()) if (id > 0) theirs.Add(id);
+        var allyCells = s.MyTeam.Select(m => m.CellId).ToHashSet();
+        foreach (var a in s.Actions.SelectMany(g => g))
+        {
+            if (a.Type != "ban" || !a.Completed || a.ChampionId <= 0) continue;
+            if (a.IsAllyAction || allyCells.Contains(a.ActorCellId)) mine.Add(a.ChampionId);
+            else theirs.Add(a.ChampionId);
+        }
+        return (mine, theirs);
+    }
+
+    public HashSet<int> UnavailableChampionIds()
+    {
+        var result = new HashSet<int>();
+        var s = Session;
+        if (s is null) return result;
+        var (mine, theirs) = BannedChampions();
+        result.UnionWith(mine);
+        result.UnionWith(theirs);
+        foreach (var a in s.Actions.SelectMany(g => g))
+            if (a.Type == "pick" && a.Completed && a.ChampionId > 0 && a.ActorCellId != s.LocalPlayerCellId) result.Add(a.ChampionId);
+        foreach (var m in s.MyTeam.Concat(s.TheirTeam))
+            if (m.ChampionId > 0 && m.CellId != s.LocalPlayerCellId) result.Add(m.ChampionId);
+        return result;
+    }
+
     public TeamMember? Me
     {
         get
@@ -415,7 +448,8 @@ public sealed class ChampSelectController
             ? "/lol-champ-select/v1/bannable-champion-ids"
             : "/lol-champ-select/v1/pickable-champion-ids";
         var ids = await _lcu.GetAsync<int[]>(path) ?? Array.Empty<int>();
-        return ids.Where(id => id > 0).Select(id => (id, ChampionName(id))).OrderBy(c => c.Item2).ToList();
+        var unavailable = UnavailableChampionIds();
+        return ids.Where(id => id > 0 && !unavailable.Contains(id)).Select(id => (id, ChampionName(id))).OrderBy(c => c.Item2).ToList();
     }
 
     public async Task<byte[]?> ChampionIconAsync(int championId)
@@ -725,8 +759,9 @@ public sealed class ChampSelectController
             var maxGames = data.Counters.Count == 0 ? 0 : data.Counters.Max(c => c.Games);
             var minGames = Math.Max(20, (int)(maxGames * 0.03));
             var pickable = isMe ? new HashSet<int>() : await PickableIdsAsync();
+            var unavailable = UnavailableChampionIds();
             var items = data.Counters
-                .Where(c => c.Games >= minGames)
+                .Where(c => c.Games >= minGames && (isMe || !unavailable.Contains(c.ChampionId)))
                 .Select(c => new
                 {
                     championId = c.ChampionId,
@@ -863,6 +898,10 @@ public sealed class ChampSelectController
     {
         var action = MyCurrentAction();
         if (action is null) return "Most nem te jössz.";
+        if (championId <= 0) return "Ismeretlen champion.";
+        if (UnavailableChampionIds().Contains(championId))
+            return $"{ChampionName(championId)} nem választható: már bannolták vagy valaki más választotta.";
+        EventLog.WriteFile($"[lcu] hover {action.Type} action={action.Id} champion={championId}");
         var error = await SendAsync(_lcu.PatchAsync($"/lol-champ-select/v1/session/actions/{action.Id}", new { championId }));
         if (error is null) _log.Add($"Kijelölve: {ChampionName(championId)}. Véglegesítés: LOCK", ConsoleColor.Cyan);
         return error;
@@ -873,11 +912,43 @@ public sealed class ChampSelectController
         var action = MyCurrentAction();
         if (action is null) return "Most nem te jössz.";
         if (action.ChampionId == 0) return "Előbb jelölj ki egy championt.";
-        var error = await SendAsync(_lcu.PatchAsync($"/lol-champ-select/v1/session/actions/{action.Id}",
-            new { championId = action.ChampionId, completed = true }));
-        if (error is null) return null;
-        var fallback = await SendAsync(_lcu.PostAsync($"/lol-champ-select/v1/session/actions/{action.Id}/complete"));
-        return fallback is null ? null : error;
+        var champion = action.ChampionId;
+        var name = ChampionName(champion);
+        if (UnavailableChampionIds().Contains(champion))
+            return $"{name} nem választható: már bannolták vagy valaki más választotta. Jelölj ki másikat.";
+
+        var path = $"/lol-champ-select/v1/session/actions/{action.Id}";
+        var patchError = await SendAsync(_lcu.PatchAsync(path, new { championId = champion, completed = true }));
+        EventLog.WriteFile($"[lcu] lock {action.Type} action={action.Id} champion={champion} patch={patchError ?? "ok"}");
+        if (await WaitForCompletedAsync(action.Id)) return null;
+
+        await SendAsync(_lcu.PatchAsync(path, new { championId = champion }));
+        var completeError = await SendAsync(_lcu.PostAsync($"{path}/complete"));
+        EventLog.WriteFile($"[lcu] lock fallback action={action.Id} complete={completeError ?? "ok"}");
+        if (await WaitForCompletedAsync(action.Id)) return null;
+
+        return $"A kliens nem fogadta el a {(action.Type == "ban" ? "bant" : "lockot")} ({name}). {patchError ?? completeError ?? "Próbáld újra, vagy nyomd meg a gépen."}";
+    }
+
+    async Task<bool> WaitForCompletedAsync(int actionId)
+    {
+        for (var i = 0; i < 6; i++)
+        {
+            await Task.Delay(250);
+            ChampSelectSession? fresh = null;
+            try
+            {
+                fresh = await _lcu.GetAsync<ChampSelectSession>("/lol-champ-select/v1/session");
+            }
+            catch (Exception)
+            {
+            }
+            var current = fresh ?? Session;
+            if (current is null) return true;
+            var action = current.Actions.SelectMany(g => g).FirstOrDefault(a => a.Id == actionId);
+            if (action is null || action.Completed) return true;
+        }
+        return false;
     }
 
     public async Task<string?> SetSpellsAsync(long spell1, long spell2)
@@ -903,7 +974,8 @@ public sealed class ChampSelectController
         {
             lock (_cancelledRequests) _cancelledRequests.Add(id);
         }
-        var kind = isTrade ? "trades" : "swaps";
+        var kind = isTrade ? "trades" : "pick-order-swaps";
+        EventLog.WriteFile($"[lcu] {kind} {id} {verb}");
         var error = await SendAsync(_lcu.PostAsync($"/lol-champ-select/v1/session/{kind}/{id}/{verb}"));
         var what = isTrade ? "champion csere" : "pick sorrend csere";
         if (error is not null)
@@ -966,8 +1038,9 @@ public sealed class ChampSelectController
                     championId = m.ChampionId,
                     championName = m.ChampionId == 0 ? null : ChampionName(m.ChampionId)
                 }).ToList(),
-                myBans = (s.Bans?.MyTeamBans ?? new List<int>()).Where(id => id != 0).Select(ChampionName).ToList(),
-                theirBans = (s.Bans?.TheirTeamBans ?? new List<int>()).Where(id => id != 0).Select(ChampionName).ToList(),
+                myBans = BannedChampions().MyBans.Select(ChampionName).ToList(),
+                theirBans = BannedChampions().TheirBans.Select(ChampionName).ToList(),
+                unavailable = UnavailableChampionIds().ToList(),
                 spell1 = me is null ? null : new { id = me.Spell1Id, name = SpellName(me.Spell1Id) },
                 spell2 = me is null ? null : new { id = me.Spell2Id, name = SpellName(me.Spell2Id) },
                 incoming = incoming is null ? null : new { label = incoming.Label, isTrade = incoming.IsTrade, id = incoming.Id },

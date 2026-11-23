@@ -23,6 +23,31 @@ public sealed class SelfTest
         _controller = controller;
     }
 
+    async Task TrySwapAsync(bool isTrade, string label, CancellationToken ct)
+    {
+        var state = await WaitStateAsync(s => SwapOptionOf(s, isTrade) is not null, 8, ct);
+        var option = state is null ? null : SwapOptionOf(state.Value, isTrade);
+        if (option is null)
+        {
+            Report(false, $"{label}: nincs elérhető csere a mockban");
+            return;
+        }
+        var id = option.Value.GetProperty("id").GetInt32();
+        var request = await CommandAsync(new { cmd = "swap", isTrade, swapId = id, verb = "request" }, ct);
+        Report(Error(request) is null, $"{label} kérése {Error(request)}");
+        var cancel = await CommandAsync(new { cmd = "swap", isTrade, swapId = id, verb = "cancel" }, ct);
+        Report(Error(cancel) is null, $"{label} visszavonása {Error(cancel)}");
+    }
+
+    static JsonElement? SwapOptionOf(JsonElement snapshot, bool isTrade)
+    {
+        if (!snapshot.TryGetProperty("champSelect", out var cs) || cs.ValueKind != JsonValueKind.Object) return null;
+        if (!cs.TryGetProperty("swapOptions", out var options) || options.ValueKind != JsonValueKind.Array) return null;
+        foreach (var o in options.EnumerateArray())
+            if (o.GetProperty("isTrade").GetBoolean() == isTrade && o.GetProperty("verb").GetString() == "request") return o;
+        return null;
+    }
+
     void Report(bool ok, string name)
     {
         var line = $"{(ok ? "PASS" : "FAIL")}  {name}";
@@ -111,6 +136,8 @@ public sealed class SelfTest
         Report(state is not null, "Champ select elindul");
         if (state is null) return;
 
+        await TrySwapAsync(false, "Pick sorrend csere", ct);
+
         var (banned, picked, pickedId) = await PlayChampSelectAsync(null, ct);
         Report(banned, "Ban kör végigment");
         Report(picked, "Pick kör végigment");
@@ -129,6 +156,8 @@ public sealed class SelfTest
         var rune = await CommandAsync(new { cmd = "rune", pageId = 102 }, ct);
         Report(Error(rune) is null, "Rúnaoldal választás champ selectben");
         Report(await WaitStateAsync(s => CurrentRune(s) == 102, 5, ct) is not null, "Rúnaoldal csere megjelenik az állapotban");
+
+        await TrySwapAsync(true, "Champion csere", ct);
 
         var badSwap = await CommandAsync(new { cmd = "swap", isTrade = true, swapId = 1, verb = "hack" }, ct);
         Report(Error(badSwap) is not null, "Érvénytelen csere-művelet tiltva");

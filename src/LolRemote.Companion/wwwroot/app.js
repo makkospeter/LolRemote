@@ -255,7 +255,7 @@ function onStateChanged() {
     app.counterExpanded = false;
     app.build = null;
   }
-  if (app.sheet?.type === 'champ' && !snap?.champSelect?.myAction) closeSheet();
+  if ((app.sheet?.type === 'champ' || app.sheet?.type === 'confirm') && !snap?.champSelect?.myAction) closeSheet();
   if (app.sheet && !snap?.champSelect) closeSheet();
 }
 
@@ -683,17 +683,16 @@ function counterRows(items, canPick, isMe) {
   const limit = 5;
   const shown = app.counterExpanded ? items : items.slice(0, limit);
   const rows = shown.map((c, i) => {
-    const pickBtn = canPick && c.pickable
-      ? `<button class="btn small" data-action="hover-counter" data-id="${esc(c.championId)}" ${app.busy ? 'disabled' : ''}>Kijelöl</button>`
-      : '';
+    const clickable = canPick && c.pickable && !isMe;
     const dim = !isMe && canPick && !c.pickable ? ' dim' : '';
-    return `<div class="counter-row${dim}">
-      <span class="rank">${i + 1}</span>
+    const inner = `<span class="rank">${i + 1}</span>
       ${avatar(c.championId, c.name, 'sm')}
-      <span class="counter-name">${esc(c.name)}</span>
+      <span class="counter-name">${esc(c.name)}${dim ? '<small>nincs meg neked</small>' : ''}</span>
       <span class="counter-wr">${pct(c.winRate)}<small>${esc(c.games)} meccs</small></span>
-      ${pickBtn}
-    </div>`;
+      ${clickable ? '<span class="pick-tag">KIJELÖL ›</span>' : ''}`;
+    return clickable
+      ? `<button class="counter-row clickable" data-action="counter-pick" data-id="${esc(c.championId)}" data-name="${esc(c.name)}" ${app.busy ? 'disabled' : ''}>${inner}</button>`
+      : `<div class="counter-row${dim}">${inner}</div>`;
   }).join('');
   const more = items.length > limit
     ? `<button class="btn ghost expand" data-action="toggle-counters">${app.counterExpanded ? 'Kevesebb ▴' : `Összes mutatása (${items.length}) ▾`}</button>`
@@ -733,9 +732,11 @@ function viewCounters(cs) {
         : `Jók ${d.championName} ellen · ${d.position}`;
       const hint = d.isMe
         ? 'Az ő nyerési arányuk ellened.'
-        : `Az ő nyerési arányuk ${d.championName} ellen.${canPick ? ' A „Kijelöl” csak hoverel, a lockot te nyomod.' : ''}`;
+        : `Az ő nyerési arányuk ${d.championName} ellen.${canPick ? ' Koppints egyre: kijelöli, és rákérdez a lockra.' : ''} A bannolt és foglalt championok nem szerepelnek.`;
+      const unavailable = new Set(cs.unavailable || []);
+      const items = d.isMe ? (d.items || []) : (d.items || []).filter(c => !unavailable.has(c.championId));
       body = `<div class="counter-label">${esc(label)}</div><div class="counter-hint">${esc(hint)}</div>`
-        + (d.items?.length ? counterRows(d.items, canPick, d.isMe) : '<div class="counter-empty">Nincs elég adat ehhez a matchuphoz.</div>');
+        + (items.length ? counterRows(items, canPick, d.isMe) : '<div class="counter-empty">Nincs elég adat ehhez a matchuphoz.</div>');
     }
   }
   const chips = targets.map(t => `<button class="chip ${t.id === target?.id ? 'on' : ''}" data-action="counter-target" data-id="${esc(t.id)}">${t.enemy ? '' : 'Te: '}${esc(t.name)}${t.lane ? ' <i>sáv</i>' : ''}</button>`).join('');
@@ -887,7 +888,19 @@ function renderSheet(force) {
   }
 
   let html = '';
-  if (app.sheet.type === 'spell') {
+  if (app.sheet.type === 'confirm') {
+    const action = cs?.myAction;
+    const isBan = action?.type === 'ban';
+    const id = action?.championId || app.sheet.championId;
+    const name = action?.championName || app.sheet.name;
+    html = `<div class="confirm">
+      ${avatar(id, name, 'xl')}
+      <h2>${esc(name)}</h2>
+      <p>${isBan ? 'Kijelölve bannolásra. Bannolod?' : 'Kijelölve. Lockolod?'}</p>
+      <button class="btn ${isBan ? 'danger' : 'primary'} big" data-action="confirm-lock" ${app.busy ? 'disabled' : ''}>${isBan ? 'BAN' : 'LOCK IN'}</button>
+      <button class="btn ghost" data-action="close-sheet">Még nem, másikat választok</button>
+    </div>`;
+  } else if (app.sheet.type === 'spell') {
     const slot = app.sheet.slot;
     const current = slot === 1 ? cs?.spell1?.id : cs?.spell2?.id;
     const b = app.build;
@@ -1003,12 +1016,26 @@ document.addEventListener('click', async event => {
       break;
     case 'pick-champ': {
       const id = Number(target.dataset.id);
+      const name = (app.champions || []).find(c => c.id === id)?.name || '';
       closeSheet();
-      await run('hover', { championId: id });
+      const result = await run('hover', { championId: id });
+      if (result && !result.error) openSheet({ type: 'confirm', championId: id, name });
+      break;
+    }
+    case 'counter-pick': {
+      const id = Number(target.dataset.id);
+      const result = await run('hover', { championId: id });
+      if (result && !result.error) openSheet({ type: 'confirm', championId: id, name: target.dataset.name || '' });
+      break;
+    }
+    case 'confirm-lock': {
+      closeSheet();
+      const isBan = cs?.myAction?.type === 'ban';
+      await run('lock', {}, isBan ? 'Bannolva!' : 'Lockolva!');
       break;
     }
     case 'lock':
-      await run('lock');
+      await run('lock', {}, cs?.myAction?.type === 'ban' ? 'Bannolva!' : 'Lockolva!');
       break;
     case 'open-spell':
       openSheet({ type: 'spell', slot: Number(target.dataset.slot) });

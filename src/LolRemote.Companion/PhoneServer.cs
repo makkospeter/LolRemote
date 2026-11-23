@@ -548,7 +548,11 @@ public sealed class PhoneServer
         var c = _controller();
         if (c is null) return ("Nincs kapcsolat a League klienssel.", null);
 
-        switch (Str(message, "cmd"))
+        var commandName = Str(message, "cmd");
+        if (commandName is not ("counters" or "build" or "champions" or "rune-recommendations"))
+            EventLog.WriteFile($"[telefon] {message.GetRawText()}");
+
+        switch (commandName)
         {
             case "accept":
                 return (await c.AcceptAsync(), null);

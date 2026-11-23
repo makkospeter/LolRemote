@@ -68,6 +68,7 @@ function snapshot() {
       myTeam: cs.myTeam.map(m => ({ ...m, championName: m.championId ? nameOf(m.championId) : null, intentName: m.intentId ? nameOf(m.intentId) : null })),
       theirTeam: cs.theirTeam.map(id => ({ championId: id, championName: id ? nameOf(id) : null })),
       myBans: cs.myBans, theirBans: cs.theirBans,
+      unavailable: [157, ...cs.theirTeam.filter(Boolean), ...cs.myBans.map(n => champions.find(c => c.name === n)?.id).filter(Boolean)],
       spell1: { id: cs.spell1, name: spellName(cs.spell1) },
       spell2: { id: cs.spell2, name: spellName(cs.spell2) },
       incoming: cs.incoming,
@@ -105,6 +106,7 @@ function execute(msg) {
         cs.myBans.push(nameOf(cs.action.championId));
         addLog(`Te bannoltad: ${nameOf(cs.action.championId)}`, 'Cyan');
         cs.action = { type: 'pick', championId: 0 };
+        cs.theirTeam = [17, 99, 0, 0, 0];
       } else {
         cs.myTeam[2].championId = cs.action.championId;
         cs.myTeam[2].intentId = 0;
