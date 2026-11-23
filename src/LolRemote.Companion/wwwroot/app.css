@@ -366,3 +366,7 @@ body.locked { position: fixed; left: 0; right: 0; width: 100%; overflow: hidden;
 body.embed .topbar { display: none; }
 body.embed main { padding-top: 22px; max-width: 640px; }
 body.embed { background: transparent; }
+.trouble { margin-top: 16px; text-align: left; font-size: 13px; color: var(--muted); background: rgba(245, 185, 66, 0.07); border: 1px solid rgba(245, 185, 66, 0.35); border-radius: 12px; padding: 12px 14px; }
+.trouble b { color: var(--amber); }
+.trouble ul { margin: 8px 0 0; padding-left: 18px; }
+.trouble li { margin-bottom: 6px; }

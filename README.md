@@ -12,14 +12,15 @@ Mindent te döntesz el: a program csak azt csinálja, amire a telefonon rányoms
 
 ## Telepítés (1 perc)
 
-1. Töltsd le a **LolRemote.exe** fájlt:
-   **https://github.com/makkospeter/LolRemote/releases/latest/download/LolRemote.exe**
-2. Indítsd el. Megnyílik a LolRemote ablaka (nem parancssor). Ha a Windows azt írja, hogy „A Windows megvédte a számítógépet”, kattints a **További információ → Futtatás mindenképp** lehetőségre. Ez azért jelenik meg, mert a program nincs fizetős tanúsítvánnyal aláírva.
-3. Ha a Windows tűzfal rákérdez, nyomd meg az **Engedélyezés** gombot. Enélkül a telefon nem éri el a gépet.
+1. Töltsd le a telepítőt: **https://github.com/makkospeter/LolRemote/releases/latest/download/LolRemote-Setup.exe**
+2. Indítsd el. Ha a Windows azt írja, hogy „A Windows megvédte a számítógépet”, kattints a **További információ → Futtatás mindenképp** lehetőségre. Ez azért jelenik meg, mert a program nincs fizetős tanúsítvánnyal aláírva.
+3. A telepítő egyszer engedélyt kér (rendszergazda). Közben a tűzfalat is beállítja, hogy a telefon elérje a gépet. A végén elindul a LolRemote, és lesz asztali ikonja is.
 4. Az ablak bal oldalán látsz egy QR-kódot. Olvasd be a telefon **Kamera** appjával.
 5. iPhone-on a Safariban: **Megosztás → Főképernyőhöz adás**. Androidon a Chrome menüben: **Hozzáadás a kezdőképernyőhöz**. Így appként a kezdőképernyőn lesz.
 
-Ezután csak indítsd el a LolRemote.exe-t a gépen, és nyisd meg a telefonon a LolRemote ikont. A program magától megtalálja a League klienst.
+Ezután elég elindítani a LolRemote-ot a gépen, és megnyitni a telefonon a LolRemote ikont. A program magától megtalálja a League klienst.
+
+**Telepítés nélkül:** a [LolRemote.exe](https://github.com/makkospeter/LolRemote/releases/latest/download/LolRemote.exe) egyetlen fájl, bárhonnan elindítható. Ekkor a tűzfalat az ablakban megjelenő **Tűzfal beállítása** gombbal lehet engedélyezni.
 
 > A telefon és a gép legyen ugyanazon a WiFi-n / routeren (vendég WiFi nem jó).
 
@@ -49,7 +50,14 @@ A kezdőképernyős app mindenre elég. Ha mégis „igazi” appot szeretnél, 
 
 **Ban jár érte?** Garanciát senki nem adhat rá, de a program csak a League kliens helyi felületét (LCU API) használja, ugyanazt, amit a Blitz, a Porofessor vagy az u.gg app. A játékhoz nem nyúl, és helyetted nem dönt: mindent te nyomsz meg a telefonon. Az automatikus elfogadás alapból ki van kapcsolva.
 
-**Nem nyílik meg a telefonon.** Nézd meg, hogy ugyanazon a hálózaton vagytok-e, és hogy a tűzfalnál az Engedélyezést nyomtad-e. Ha elnyomtad: Windows keresőben „Alkalmazás engedélyezése a Windows tűzfalon” → LolRemote → Magánhálózat legyen bepipálva. Ha a gép új IP-címet kapott, olvasd be újra a QR-kódot (az ablakban a „QR-kód mutatása” gombbal előhozod).
+**Nem nyílik meg a telefonon.**
+- Ha a LolRemote ablakában sárga **Tűzfal** doboz látszik, nyomd meg a **Tűzfal beállítása** gombot.
+- **Brave böngészőben** koppints az oroszlán ikonra, és kapcsold ki a Shields-et erre az oldalra, vagy használd a Chrome-ot / Safarit.
+- Ha vírusirtód van (Avast, AVG, ESET, Norton…), annak a tűzfalában is engedélyezd a LolRemote-ot.
+- Ha a gépnek több hálózati címe van (VPN, Hamachi, virtuális gép), az ablakban a QR-kód alatt válaszd ki a megfelelőt.
+- A telefonon kapcsold ki a VPN-t. Ha a gép új IP-címet kapott, olvasd be újra a QR-kódot (az ablakban a „QR-kód mutatása” gombbal előhozod).
+
+**A vírusirtó gyanúsnak jelzi.** Az aláíratlan, új programokat a Windows Defender néha tévesen megjelöli. A telepítős változatnál ez ritkább. A program nyílt forráskódú, itt bárki megnézheti. Ha mégis jelzi, a téves riasztást be lehet jelenteni a Microsoftnak: https://www.microsoft.com/wdsi/filesubmission
 
 **Rövid cím:** a QR-kód helyett beírhatod a telefonon a `http://lolremote.local` címet is (ha a hálózat engedi), majd a 6 jegyű kódot.
 
@@ -61,7 +69,7 @@ A kezdőképernyős app mindenre elég. Ha mégis „igazi” appot szeretnél, 
 - `src/LolRemote.MockLcu`: kamu League kliens, League nélküli fejlesztéshez és teszteléshez.
 - `tools/dev`: `start-mock.cmd` és `start-dev-mock.cmd` (fejlesztés League nélkül), `start-dev.cmd` (valódi klienssel, diagnosztikai mentéssel), `selftest.cmd` / `selftest-practice.cmd` (automata teszt a mock ellen).
 - `tools/web-test`: a telefonos felület tesztje Playwrighttal (`node fake-companion.mjs <wwwroot> 8765`, majd `node ui-test.mjs`).
-- `build-release.cmd`: elkészíti a `release\LolRemote.exe`-t. Egy `v*` tag pusholásakor a GitHub Actions is elkészíti, és feltölti a Release-hez.
+- `build-release.cmd`: elkészíti a `release\LolRemote.exe`-t. Minden push után a GitHub Actions elkészíti a telepítőt (`installer/LolRemote.iss`, Inno Setup) és a hordozható exe-t; egy `v*` tag pusholásakor ezeket a Release-hez is feltölti.
 
 Kapcsolók: `--mock`, `--lockfile <út>`, `--debug-dir <mappa>`, `--console` (régi szöveges felület), `--selftest`. Napló: `%APPDATA%\LolRemote\lolremote.log`.
 

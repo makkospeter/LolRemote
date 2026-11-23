@@ -15,6 +15,8 @@ using Microsoft.Extensions.Logging;
 
 namespace LolRemote.Companion;
 
+public record HostOption(string Address, string Name);
+
 public sealed class PhoneServer
 {
     public const int Port = 8765;
@@ -41,11 +43,39 @@ public sealed class PhoneServer
 
     public string PairingCode { get; }
     public List<string> Urls { get; private set; } = new();
+    public List<HostOption> Hosts { get; private set; } = new();
     public IPAddress? PrimaryAddress { get; private set; }
+    DateTime _addressesAt = DateTime.MinValue;
+    string? _preferredHost;
     public bool Port80 { get; private set; }
     public bool Running { get; private set; }
     public bool MdnsRunning => _mdns?.Running == true;
-    public int ClientCount => _clients.Values.Count(c => c.Authenticated && !c.IsDesktop);
+    public int ClientCount =>
+        _clients.Values.Count(c => c.Authenticated && !c.IsDesktop)
+        + _pollingClients.Count(p => DateTime.UtcNow - p.Value < TimeSpan.FromSeconds(6));
+
+    readonly ConcurrentDictionary<string, DateTime> _pollingClients = new();
+
+    async Task<bool> CheckCodeAsync(HttpContext context)
+    {
+        var code = context.Request.Headers["X-LolRemote-Code"].ToString();
+        if (code == PairingCode) return true;
+        await Task.Delay(1000);
+        return false;
+    }
+
+    void MarkPollingClient(HttpContext context)
+    {
+        if (context.Request.Headers["X-LolRemote-Client"].ToString() == "desktop") return;
+        var key = context.Connection.RemoteIpAddress?.ToString() ?? "?";
+        var isNew = !_pollingClients.TryGetValue(key, out var last) || DateTime.UtcNow - last > TimeSpan.FromSeconds(6);
+        _pollingClients[key] = DateTime.UtcNow;
+        if (isNew)
+        {
+            _log.Add("Telefon csatlakozott (egyszerű kapcsolat).", ConsoleColor.Green);
+            try { File.WriteAllText(AppPaths.PathFor("phone-paired.txt"), DateTime.Now.ToString("s")); } catch (Exception) { }
+        }
+    }
     public event Action? ShowRequested;
     public bool OpenBrowserOnFirstRun { get; set; } = true;
 
@@ -96,10 +126,41 @@ public sealed class PhoneServer
 
     void RefreshAddresses()
     {
-        var addresses = LocalAddresses();
-        PrimaryAddress = addresses.FirstOrDefault();
-        Urls = addresses.Select(a => $"http://{a}:{Port}").ToList();
+        _addressesAt = DateTime.UtcNow;
+        if (_preferredHost is null)
+        {
+            try
+            {
+                var file = AppPaths.PathFor("preferred-host.txt");
+                _preferredHost = File.Exists(file) ? File.ReadAllText(file).Trim() : "";
+            }
+            catch (Exception)
+            {
+                _preferredHost = "";
+            }
+        }
+        var hosts = LocalAddresses();
+        var previous = PrimaryAddress;
+        var chosen = hosts.FirstOrDefault(h => h.Address == _preferredHost) ?? hosts.FirstOrDefault();
+        Hosts = hosts;
+        PrimaryAddress = chosen is null ? null : IPAddress.Parse(chosen.Address);
+        Urls = hosts.Select(h => $"http://{h.Address}:{Port}").ToList();
         if (Urls.Count == 0) Urls.Add($"http://localhost:{Port}");
+        if (!Equals(previous, PrimaryAddress)) _qrLines = null;
+    }
+
+    void RefreshAddressesIfStale()
+    {
+        if (DateTime.UtcNow - _addressesAt > TimeSpan.FromSeconds(5)) RefreshAddresses();
+    }
+
+    public bool SelectHost(string address)
+    {
+        if (!Hosts.Any(h => h.Address == address)) return false;
+        _preferredHost = address;
+        try { File.WriteAllText(AppPaths.PathFor("preferred-host.txt"), address); } catch (Exception) { }
+        RefreshAddresses();
+        return true;
     }
 
     public Task StartAsync(CancellationToken ct) => StartAsync(IsPortFree(80), ct);
@@ -125,6 +186,7 @@ public sealed class PhoneServer
         app.MapGet("/setup-info", (HttpContext context) =>
         {
             if (!IsLocal(context)) return Results.NotFound();
+            RefreshAddressesIfStale();
             var controller = _controller();
             return Results.Json(new
             {
@@ -134,6 +196,8 @@ public sealed class PhoneServer
                 code = PairingCode,
                 phones = ClientCount,
                 urls = Urls,
+                hosts = Hosts.Select(h => new { address = h.Address, name = h.Name, selected = h.Address == PrimaryAddress?.ToString() }),
+                firewall = Firewall.Status(),
                 league = controller is not null,
                 phaseText = controller is null ? null : ChampSelectController.PhaseText(controller.Phase),
                 mode = controller?.ModeLabel,
@@ -149,6 +213,53 @@ public sealed class PhoneServer
         app.MapGet("/setup-qr.png", (HttpContext context) => IsLocal(context)
             ? Results.Bytes(Qr.Png(PairUrl), "image/png")
             : Results.NotFound());
+        app.MapPost("/setup-host", (HttpContext context) =>
+        {
+            if (!IsLocal(context)) return Results.NotFound();
+            var address = context.Request.Query["address"].ToString();
+            return SelectHost(address) ? Results.Ok() : Results.BadRequest();
+        });
+        app.MapPost("/setup-firewall", async (HttpContext context) =>
+        {
+            if (!IsLocal(context)) return Results.NotFound();
+            var error = await Task.Run(Firewall.Fix);
+            if (error is null) _log.Add("Tűzfal beállítva, a telefon már elérheti a gépet.", ConsoleColor.Green);
+            return Results.Json(new { error, firewall = Firewall.Status(fresh: true) });
+        });
+        app.MapGet("/api/state", async (HttpContext context) =>
+        {
+            if (!await CheckCodeAsync(context)) return Results.Unauthorized();
+            MarkPollingClient(context);
+            return Results.Text(StateJson(), "application/json");
+        });
+        app.MapPost("/api/cmd", async (HttpContext context) =>
+        {
+            if (!await CheckCodeAsync(context)) return Results.Unauthorized();
+            MarkPollingClient(context);
+            JsonElement message;
+            try
+            {
+                using var doc = await JsonDocument.ParseAsync(context.Request.Body);
+                message = doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                return Results.BadRequest();
+            }
+            string? error;
+            object? data = null;
+            try
+            {
+                (error, data) = await ExecuteAsync(message);
+            }
+            catch (Exception ex)
+            {
+                error = $"Hiba: {ex.Message}";
+            }
+            if (error is not null) _log.Add($"Telefon parancs hiba: {error}", ConsoleColor.Red);
+            MarkDirty();
+            return Results.Text(Serialize(new { error, data }), "application/json");
+        });
         app.MapFallback("{*path}", (RequestDelegate)(context => ServeStaticAsync(context, webRoot)));
 
         try
@@ -281,11 +392,26 @@ public sealed class PhoneServer
 
     static readonly string[] VirtualHints = { "virtual", "vmware", "hyper-v", "vethernet", "virtualbox", "wsl", "loopback", "bluetooth", "tap-", "tunnel", "zerotier", "tailscale", "hamachi", "radmin" };
 
-    static List<IPAddress> LocalAddresses()
+    static IPAddress? RouteAddress()
     {
         try
         {
-            var candidates = new List<(IPAddress Address, int Score)>();
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.Connect(new IPEndPoint(IPAddress.Parse("8.8.8.8"), 53));
+            return (socket.LocalEndPoint as IPEndPoint)?.Address;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    static List<HostOption> LocalAddresses()
+    {
+        try
+        {
+            var route = RouteAddress();
+            var candidates = new List<(HostOption Host, int Score)>();
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
@@ -293,23 +419,26 @@ public sealed class PhoneServer
                 var text = $"{nic.Name} {nic.Description}".ToLowerInvariant();
                 var isVirtual = VirtualHints.Any(text.Contains);
                 var hasGateway = properties.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
+                var isWireless = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+                var kind = isVirtual ? "virtuális / VPN" : isWireless ? "WiFi" : nic.NetworkInterfaceType == NetworkInterfaceType.Ethernet ? "Ethernet" : "hálózat";
                 foreach (var unicast in properties.UnicastAddresses)
                 {
                     var address = unicast.Address;
                     if (address.AddressFamily != AddressFamily.InterNetwork) continue;
                     var s = address.ToString();
                     if (s.StartsWith("169.254.")) continue;
-                    var score = (hasGateway ? 0 : 10) + (isVirtual ? 20 : 0)
+                    var isRoute = route is not null && address.Equals(route) && !isVirtual;
+                    var score = (isRoute ? -100 : 0) + (hasGateway ? 0 : 10) + (isVirtual ? 20 : 0)
                         + (s.StartsWith("192.168.") ? 0 : s.StartsWith("10.") ? 1 : 2)
                         + (nic.NetworkInterfaceType == NetworkInterfaceType.Ethernet ? 0 : 1);
-                    candidates.Add((address, score));
+                    candidates.Add((new HostOption(s, $"{kind} · {nic.Name}"), score));
                 }
             }
-            return candidates.OrderBy(c => c.Score).Select(c => c.Address).Distinct().ToList();
+            return candidates.OrderBy(c => c.Score).Select(c => c.Host).DistinctBy(h => h.Address).ToList();
         }
         catch (Exception)
         {
-            return new List<IPAddress>();
+            return new List<HostOption>();
         }
     }
 

@@ -43,6 +43,10 @@ const app = {
   lastPhaseKey: '',
   wakeLock: null,
   counterExpanded: false,
+  transport: storageGet('transport') === 'poll' ? 'poll' : 'ws',
+  wsFailures: 0,
+  pollTimer: null,
+  failingSince: 0,
   build: null
 };
 
@@ -82,6 +86,10 @@ function avatar(id, name, size) {
 
 function connect() {
   clearTimeout(app.reconnectTimer);
+  if (app.transport === 'poll') {
+    startPolling();
+    return;
+  }
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   let ws;
   try {
@@ -91,7 +99,17 @@ function connect() {
     return;
   }
   app.ws = ws;
+  let opened = false;
+  const openTimer = setTimeout(() => {
+    if (!opened && app.ws === ws) {
+      try { ws.close(); } catch { }
+    }
+  }, 5000);
   ws.onopen = () => {
+    opened = true;
+    clearTimeout(openTimer);
+    app.wsFailures = 0;
+    app.failingSince = 0;
     app.wsOpen = true;
     if (app.code) send({ type: 'auth', code: app.code, client: CLIENT_KIND });
     render();
@@ -102,8 +120,19 @@ function connect() {
     handleMessage(message);
   };
   ws.onclose = () => {
+    clearTimeout(openTimer);
     if (app.ws !== ws) return;
     app.ws = null;
+    if (!opened) {
+      app.wsFailures++;
+      if (!app.failingSince) app.failingSince = Date.now();
+      if (app.wsFailures >= 2) {
+        app.transport = 'poll';
+        render();
+        startPolling();
+        return;
+      }
+    }
     app.wsOpen = false;
     app.authed = false;
     failPending('Megszakadt a kapcsolat a PC-vel.');
@@ -111,6 +140,48 @@ function connect() {
     scheduleReconnect();
   };
   ws.onerror = () => { };
+}
+
+async function pollOnce() {
+  if (!app.code) {
+    app.wsOpen = true;
+    app.authed = false;
+    render();
+    return;
+  }
+  try {
+    const response = await fetch('/api/state', {
+      cache: 'no-store',
+      headers: { 'X-LolRemote-Code': app.code, 'X-LolRemote-Client': CLIENT_KIND }
+    });
+    if (response.status === 401) {
+      handleMessage({ type: 'auth', ok: false });
+      return;
+    }
+    if (!response.ok) throw new Error(String(response.status));
+    const state = await response.json();
+    const wasAuthed = app.authed;
+    app.wsOpen = true;
+    app.failingSince = 0;
+    if (!wasAuthed) handleMessage({ type: 'auth', ok: true });
+    storageSet('transport', 'poll');
+    handleMessage(state);
+  } catch {
+    if (!app.failingSince) app.failingSince = Date.now();
+    if (app.wsOpen) {
+      app.wsOpen = false;
+      app.authed = false;
+      render();
+    } else {
+      render();
+    }
+  }
+}
+
+function startPolling() {
+  clearInterval(app.pollTimer);
+  pollOnce();
+  app.pollTimer = setInterval(pollOnce, 1000);
 }
 
 function scheduleReconnect() {
@@ -189,6 +260,17 @@ function onStateChanged() {
 }
 
 function command(cmd, args = {}) {
+  if (app.transport === 'poll') {
+    return fetch('/api/cmd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-LolRemote-Code': app.code || '', 'X-LolRemote-Client': CLIENT_KIND },
+      body: JSON.stringify({ cmd, ...args })
+    })
+      .then(r => r.status === 401 ? { error: 'Hibás párosító kód.' } : r.json())
+      .then(result => { pollOnce(); return result; })
+      .catch(() => ({ error: 'Nincs kapcsolat a PC-vel.' }))
+      .then(result => new Promise(resolve => setTimeout(() => resolve(result), 0)));
+  }
   return new Promise(resolve => {
     const id = app.nextId++;
     app.pending.set(id, resolve);
@@ -351,7 +433,15 @@ function viewMain() {
       <div class="spinner"></div>
       <h1>Kapcsolódás a PC-hez…</h1>
       <p>Ellenőrizd, hogy a LolRemote fut a gépen, és a telefon ugyanazon a WiFi-n van.</p>
-      <p class="hint">Ha a gép címe megváltozott, olvasd be újra a QR-kódot.</p>
+      ${app.failingSince && Date.now() - app.failingSince > 8000 ? `<div class="trouble">
+        <b>Nem sikerül kapcsolódni? Próbáld ezeket:</b>
+        <ul>
+          <li>Brave böngészőben: koppints az oroszlán ikonra, és kapcsold ki a Shields-et erre az oldalra, vagy nyisd meg Chrome-ban / Safariban.</li>
+          <li>A gépen a LolRemote ablakában nyomd meg a „Tűzfal beállítása” gombot, ha látod.</li>
+          <li>A telefonon kapcsold ki a VPN-t, és ne vendég WiFi-n legyél.</li>
+          <li>Ha a gép címe megváltozott, olvasd be újra a QR-kódot.</li>
+        </ul>
+      </div>` : ''}
     </section>`;
   }
   if (!app.authed) return viewPairing();
@@ -1075,7 +1165,8 @@ document.addEventListener('submit', event => {
   }
   app.code = value;
   app.authError = null;
-  if (!send({ type: 'auth', code: value, client: CLIENT_KIND })) connect();
+  if (app.transport === 'poll') pollOnce();
+  else if (!send({ type: 'auth', code: value, client: CLIENT_KIND })) connect();
 });
 
 document.addEventListener('input', event => {
@@ -1097,7 +1188,8 @@ document.addEventListener('visibilitychange', () => {
     clearInterval(titleTimer);
     document.title = 'LolRemote';
     app.wakeLock = null;
-    if (!app.ws) connect();
+    if (app.transport === 'poll') startPolling();
+    else if (!app.ws) connect();
   }
 });
 

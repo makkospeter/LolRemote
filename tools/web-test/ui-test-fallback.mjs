@@ -1,0 +1,50 @@
+import { chromium, devices } from 'playwright';
+
+const base = process.argv[2] || 'http://127.0.0.1:8765';
+const results = [];
+const check = (name, ok) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}`);
+
+await fetch(`${base}/__test/phase?name=Lobby`);
+await fetch(`${base}/__test/blockws?on=1`);
+const browser = await chromium.launch();
+const context = await browser.newContext({ ...devices['iPhone 13'] });
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', e => errors.push(e.message));
+await page.goto(`${base}/?k=123456`);
+await page.waitForSelector('text=Lobby', { timeout: 20000 });
+check('WebSocket tiltva: magától átvált egyszerű kapcsolatra, lobby látszik', true);
+await fetch(`${base}/__test/phase?name=ReadyCheck`);
+await page.waitForSelector('.accept-btn', { timeout: 5000 });
+check('Lekérdezéses módban is megjelenik a ready check', true);
+await page.click('.accept-btn', { force: true });
+await page.waitForSelector('text=TE JÖSSZ · BAN', { timeout: 5000 });
+check('Lekérdezéses módban az elfogadás és a champ select működik', true);
+const info = await (await fetch(`${base}/setup-info`)).json();
+check(`A telefon csatlakozottnak látszik a PC-n (${info.phones})`, info.phones >= 1);
+
+const dead = await browser.newContext({ ...devices['iPhone 13'] });
+const deadPage = await dead.newPage();
+await deadPage.route('**/api/**', r => r.abort());
+await deadPage.goto(`${base}/?k=123456`);
+await deadPage.waitForSelector('.trouble', { timeout: 25000 });
+check('Ha semmi nem megy, hibaelhárítási tippek jelennek meg (Brave, tűzfal, VPN)', await deadPage.isVisible('text=Shields'));
+await deadPage.screenshot({ path: '/home/claude/shots/f1-trouble.png' });
+
+const desk = await browser.newPage({ viewport: { width: 1180, height: 780 } });
+await fetch(`${base}/__test/blockws?on=0`);
+await desk.goto(`${base}/desktop.html`);
+await desk.waitForSelector('#fw-card:not([hidden])');
+check('Asztali ablak: tűzfal figyelmeztetés látszik', true);
+check('Asztali ablak: több cím esetén választó látszik', await desk.isVisible('#host-select'));
+await desk.screenshot({ path: '/home/claude/shots/f2-desktop-fw.png' });
+await desk.click('#fw-fix');
+await desk.waitForSelector('#fw-card[hidden]', { state: 'attached', timeout: 5000 });
+check('Tűzfal gomb után eltűnik a figyelmeztetés', true);
+await desk.selectOption('#host-select', '10.8.0.2');
+await desk.waitForTimeout(2500);
+check('Cím váltása elmentődik', (await (await fetch(`${base}/setup-info`)).json()).hosts.find(h => h.selected).address === '10.8.0.2');
+check(`Nincs JS hiba (${errors.join(' | ') || 'nincs'})`, errors.length === 0);
+console.log(results.join('\n'));
+await browser.close();
+process.exit(results.some(r => r.startsWith('FAIL')) ? 1 : 0);

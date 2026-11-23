@@ -16,6 +16,7 @@ const spells = [[4, 'Flash'], [14, 'Ignite'], [12, 'Teleport'], [7, 'Heal'], [11
 const spellName = id => spells.find(s => s.id === id)?.name ?? `#${id}`;
 
 const commands = [];
+const fake = { blockWs: false, firewall: 'missing', host: '192.168.1.23', polled: 0 };
 const log = [];
 const addLog = (text, color = 'Gray') => log.push({ time: new Date().toTimeString().slice(0, 8), text, color });
 
@@ -267,7 +268,25 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/setup-info') {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ pairUrl: `http://192.168.1.23/?k=${CODE}`, baseUrl: 'http://192.168.1.23', shortUrl: 'http://lolremote.local', code: CODE,
-      phones: [...clients].filter(c => c.authed && c.kind !== 'desktop').length, league: true, phaseText: world.phase, mode: 'Ranked Solo/Duo', version: '1.0.0' }));
+      phones: [...clients].filter(c => c.authed && c.kind !== 'desktop').length + (Date.now() - fake.polled < 5000 ? 1 : 0), league: true,
+      firewall: fake.firewall, hosts: ['192.168.1.23', '10.8.0.2'].map(a => ({ address: a, name: a.startsWith('10.') ? 'virtuális / VPN · Radmin' : 'Ethernet · Ethernet', selected: a === fake.host })), phaseText: world.phase, mode: 'Ranked Solo/Duo', version: '1.0.0' }));
+    return;
+  }
+  if (url.pathname === '/__test/blockws') { fake.blockWs = url.searchParams.get('on') === '1'; res.end('ok'); return; }
+  if (url.pathname === '/setup-firewall') { fake.firewall = 'ok'; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ error: null, firewall: 'ok' })); return; }
+  if (url.pathname === '/setup-host') { fake.host = url.searchParams.get('address'); res.end('ok'); return; }
+  if (url.pathname === '/api/state' || url.pathname === '/api/cmd') {
+    if (req.headers['x-lolremote-code'] !== CODE) { res.statusCode = 401; res.end(); return; }
+    if (req.headers['x-lolremote-client'] !== 'desktop') fake.polled = Date.now();
+    res.setHeader('content-type', 'application/json');
+    if (url.pathname === '/api/state') { res.end(JSON.stringify({ type: 'state', connected: true, snapshot: snapshot(), log: log.slice(-15) })); return; }
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const result = execute(JSON.parse(body));
+      res.end(JSON.stringify({ error: result.error ?? null, data: result.data ?? null }));
+      broadcast();
+    });
     return;
   }
   if (url.pathname === '/setup-qr.png') { res.setHeader('content-type', 'image/png'); res.end(fs.readFileSync(path.join(root, 'icon-512.png'))); return; }
@@ -279,6 +298,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket) => {
+  if (fake.blockWs) { socket.destroy(); return; }
   const key = req.headers['sec-websocket-key'];
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);

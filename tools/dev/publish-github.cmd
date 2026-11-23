@@ -4,8 +4,13 @@ cd /d "%~dp0..\.."
 set "PATH=%PATH%;C:\Program Files\Git\cmd"
 if not exist logs mkdir logs
 set "VERSION=%~1"
+if "%VERSION%"=="" for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "([xml](Get-Content src\LolRemote.Companion\LolRemote.Companion.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1"`) do set "VERSION=%%v"
 if "%VERSION%"=="" set "VERSION=1.0.0"
 echo RUNNING> logs\publish-status.txt
+if exist tools\ci\release.yml (
+  if not exist .github\workflows mkdir .github\workflows
+  move /y tools\ci\release.yml .github\workflows\release.yml >nul
+)
 echo === LolRemote feltoltese GitHubra (v%VERSION%) === > logs\publish.log
 git --version >> logs\publish.log 2>&1 || goto fail
 if not exist .git git init -b main >> logs\publish.log 2>&1

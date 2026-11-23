@@ -11,8 +11,14 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Product>LolRemote</Product>
-    <Version>1.0.0</Version>
-    <Description>League of Legends champ select a telefonodról</Description>
+    <Version>1.1.0</Version>
+    <Description>LolRemote – League of Legends champ select a telefonodról</Description>
+    <Company>makkospeter</Company>
+    <Authors>makkospeter</Authors>
+    <Copyright>Copyright © 2026 makkospeter</Copyright>
+    <AssemblyTitle>LolRemote</AssemblyTitle>
+    <NeutralLanguage>hu</NeutralLanguage>
+    <RepositoryUrl>https://github.com/makkospeter/LolRemote</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>

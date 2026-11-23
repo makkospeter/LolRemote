@@ -6,8 +6,9 @@ echo RUNNING> logs\release-status.txt
 echo === LolRemote.exe keszitese (egyetlen fajl, nem kell hozza .NET) ===
 taskkill /im LolRemote.exe /f >nul 2>&1
 timeout /t 2 /nobreak >nul
-if exist release rmdir /s /q release
-dotnet publish src\LolRemote.Companion -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o release > logs\release-build.log 2>&1
+if exist release\LolRemote.exe move /y release\LolRemote.exe "%TEMP%\LolRemote-old-%RANDOM%.exe" >nul 2>&1
+if exist release\LolRemote.exe ren release\LolRemote.exe "LolRemote-old-%RANDOM%.exe" >nul 2>&1
+dotnet publish src\LolRemote.Companion -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=false -p:DebugType=none -o release > logs\release-build.log 2>&1
 if errorlevel 1 goto fail
 echo DONE> logs\release-status.txt
 echo.
