@@ -1,0 +1,12 @@
+bin/
+obj/
+release/
+logs/
+debug/
+*.zip
+*.user
+.vs/
+mobile/LolRemoteApp/
+node_modules/
+_regi/
+tools/ci/
