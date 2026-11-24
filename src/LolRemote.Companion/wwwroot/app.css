@@ -380,3 +380,11 @@ button.counter-row:active { background: rgba(10, 200, 185, 0.15); }
 .confirm .btn { width: 100%; }
 .avatar.xl { width: 96px; height: 96px; border-radius: 20px; }
 .avatar.xl::before { font-size: 30px; }
+.turn.intent { border-color: rgba(200, 170, 110, 0.55); }
+.turn.intent .label { color: var(--gold); }
+.turn-note { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.bansug .counter-name small { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
+.bansug .both { color: var(--gold); font-style: normal; }
+.pick-tag.ban { color: #ff6b6b; }
+.ban-best { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 90, 90, 0.10); font-size: 14px; }
+.btn.small { padding: 6px 12px; font-size: 13px; min-height: 0; width: auto; }

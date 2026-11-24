@@ -4,7 +4,7 @@ using System.Windows.Forms;
 using LolRemote.Companion;
 
 var consoleMode = args.Contains("--console");
-var headless = args.Contains("--selftest") || args.Contains("--probe") || args.Contains("--probe-calls");
+var headless = args.Contains("--selftest") || args.Contains("--probe") || args.Contains("--probe-calls") || args.Contains("--lcu-help");
 var guiMode = !consoleMode && !headless;
 
 if (consoleMode) NativeConsole.Attach();
@@ -22,6 +22,12 @@ var callsArg = Array.IndexOf(args, "--probe-calls");
 if (callsArg >= 0 && callsArg + 2 < args.Length)
 {
     Environment.Exit(await CounterProbe.RunCallsAsync(args[callsArg + 1], args[callsArg + 2], CancellationToken.None));
+}
+
+var helpArg = Array.IndexOf(args, "--lcu-help");
+if (helpArg >= 0 && helpArg + 1 < args.Length)
+{
+    Environment.Exit(await LcuHelp.DumpAsync(args[helpArg + 1]));
 }
 
 var isMock = args.Contains("--mock");

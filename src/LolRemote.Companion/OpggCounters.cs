@@ -15,6 +15,8 @@ public record RuneStat(int PrimaryStyleId, int SubStyleId, List<int> PerkIds, in
 
 public record ChampionInfo(string Key, List<string> Positions);
 
+public record MetaStat(string Name, int Tier, int Rank, double WinRate, double PickRate, double BanRate, int Games, bool IsRip);
+
 public record MatchupData(
     string Position,
     List<MatchupStat> Counters,
@@ -210,6 +212,60 @@ public sealed class OpggCounters : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    public async Task<List<MetaStat>> LaneMetaAsync(string position, CancellationToken ct)
+    {
+        var cacheKey = $"meta|{position}";
+        if (_cache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow - cached.At < CacheTime)
+            return (List<MetaStat>)cached.Value;
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var className = char.ToUpperInvariant(position[0]) + position[1..];
+            var args = new Dictionary<string, object>
+            {
+                ["position"] = position,
+                ["lang"] = "en_US",
+                ["desired_output_fields"] = new[] { $"data.positions.{position}[].{{ban_rate,champion,is_rip,pick_rate,play,rank,tier,win_rate}}" }
+            };
+            var result = await CallAsync("lol_list_lane_meta_champions", args, ct);
+            DebugWriter?.Invoke($"opgg-meta-{position}", result);
+            var list = ParseMeta(TextOf(result), className);
+            if (list.Count == 0) throw new McpException("Az OP.GG nem adott meta adatot.");
+            _cache[cacheKey] = (DateTime.UtcNow, list);
+            return list;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public static List<MetaStat> ParseMeta(string text, string className)
+    {
+        var result = new List<MetaStat>();
+        var header = Regex.Match(text, $@"class {className}:\s*([\w,]+)");
+        if (!header.Success) return result;
+        var fields = header.Groups[1].Value.Split(',').Select(f => f.Trim()).ToList();
+        foreach (Match m in Regex.Matches(text, $@"\b{className}\(((?:""(?:[^""\\]|\\.)*""|[^()""])*)\)"))
+        {
+            var values = Regex.Matches(m.Groups[1].Value, @"""(?:[^""\\]|\\.)*""|[^,]+")
+                .Select(v => v.Value.Trim())
+                .ToList();
+            if (values.Count != fields.Count) continue;
+            string Get(string name)
+            {
+                var i = fields.IndexOf(name);
+                return i < 0 ? "" : values[i];
+            }
+            double D(string name) => double.TryParse(Get(name), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 0;
+            var name = Get("champion").Trim('"');
+            name = Regex.Unescape(name);
+            if (name.Length == 0) continue;
+            result.Add(new MetaStat(name, (int)D("tier"), (int)D("rank"), D("win_rate"), D("pick_rate"), D("ban_rate"), (int)D("play"), Get("is_rip") == "true"));
+        }
+        return result;
     }
 
     static RuneStat? ParseRune(JsonElement r)

@@ -141,6 +141,8 @@ public sealed class SelfTest
         var (banned, picked, pickedId) = await PlayChampSelectAsync(null, ct);
         Report(banned, "Ban kör végigment");
         Report(picked, "Pick kör végigment");
+        if (picked && Snapshot() is { } afterPick)
+            Report(SwapOptionOf(afterPick, false) is null, "Lock után nincs pick sorrend csere ajánlat");
 
         state = await WaitStateAsync(s => TimerPhase(s) == "FINALIZATION", 60, ct);
         Report(state is not null, "Finalizáció elérve");
@@ -316,6 +318,7 @@ public sealed class SelfTest
         var banned = false;
         var picked = false;
         var pickedId = 0;
+        var intentDone = false;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(150);
         while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
         {
@@ -337,6 +340,27 @@ public sealed class SelfTest
             }
 
             var type = action.GetProperty("type").GetString();
+            if (type == "intent")
+            {
+                if (intentDone)
+                {
+                    await Task.Delay(200, ct);
+                    continue;
+                }
+                intentDone = true;
+                var intentList = (await CommandAsync(new { cmd = "champions" }, ct)).GetProperty("data");
+                Report(intentList.ValueKind == JsonValueKind.Array && intentList.GetArrayLength() > 0, "Tervezés: championlista elérhető");
+                var intentId = preferredPick ?? intentList.EnumerateArray().First().GetProperty("id").GetInt32();
+                var intentResult = await CommandAsync(new { cmd = "hover", championId = intentId }, ct);
+                Report(Error(intentResult) is null, $"Tervezés: pick szándék beállítva {Error(intentResult)}");
+                var shown = await WaitStateAsync(s => s.TryGetProperty("champSelect", out var c2) && c2.ValueKind == JsonValueKind.Object && c2.GetProperty("myIntentId").GetInt32() == intentId, 5, ct);
+                Report(shown is not null, "Tervezés: a szándék megjelenik az állapotban");
+                var lockPlanning = await CommandAsync(new { cmd = "lock" }, ct);
+                Report(Error(lockPlanning) is not null, "Tervezés közben nincs ban/lock (nem bannolja a szándékot)");
+                var suggestions = await CommandAsync(new { cmd = "ban-suggestions" }, ct);
+                Report(Error(suggestions) is not null || suggestions.GetProperty("data").TryGetProperty("meta", out _), $"Ban javaslat parancs válaszol {Error(suggestions)}");
+                continue;
+            }
             var champions = await CommandAsync(new { cmd = "champions" }, ct);
             var list = champions.GetProperty("data");
             Report(list.ValueKind == JsonValueKind.Array && list.GetArrayLength() > 0, $"Championlista ({type}): {(list.ValueKind == JsonValueKind.Array ? list.GetArrayLength() : 0)} db");

@@ -55,6 +55,7 @@ public class MockEngine
     static readonly TimeSpan AllAcceptedDelay = TimeSpan.FromSeconds(1.5);
     static readonly TimeSpan BanPickLength = TimeSpan.FromSeconds(30);
     static readonly TimeSpan FinalizationLength = TimeSpan.FromSeconds(20);
+    static readonly TimeSpan PlanningLength = TimeSpan.FromSeconds(6);
 
     readonly object _lock = new();
     readonly Random _rng = new();
@@ -232,6 +233,15 @@ public class MockEngine
             var action = _session.Actions.SelectMany(g => g).FirstOrDefault(a => a.Id == actionId);
             if (action is null) return "Nincs ilyen action.";
             if (action.ActorCellId != _session.LocalPlayerCellId) return "Ez nem a te actionöd.";
+            if (_session.Timer.Phase == "PLANNING")
+            {
+                if (action.Type != "pick" || completed == true || championId is not int intent) return "Tervezés alatt csak pick szándékot lehet jelölni.";
+                action.ChampionId = intent;
+                FindMember(action.ActorCellId)!.ChampionPickIntent = intent;
+                Out.Log($"A játékos pick szándéka: {Name(intent)}", ConsoleColor.DarkCyan);
+                PublishSession();
+                return null;
+            }
             if (!action.IsInProgress || action.Completed) return "Most nem te jössz.";
 
             if (championId is int champ)
@@ -442,7 +452,19 @@ public class MockEngine
         SetPhase("ChampSelect");
         var me = FindMember(session.LocalPlayerCellId)!;
         Out.Log($"CHAMP SELECT indul. A játékos pozíciója: {PositionName(me.AssignedPosition)}.", ConsoleColor.Yellow);
-        AdvanceGroup(now);
+        if (session.Actions.Count > 0 && session.Actions[0].Any(a => a.Type == "ban"))
+        {
+            session.Timer.Phase = "PLANNING";
+            _phaseStartedAt = now;
+            _phaseDeadline = now + PlanningLength;
+            foreach (var a in session.Actions[0]) a.IsInProgress = true;
+            Out.Log("TERVEZÉS: jelöld ki, kivel szeretnél játszani (pick szándék).", ConsoleColor.Yellow);
+            PublishSession();
+        }
+        else
+        {
+            AdvanceGroup(now);
+        }
 
         if (_rng.NextDouble() < 0.4)
         {
@@ -493,6 +515,13 @@ public class MockEngine
         if (s is null) return;
 
         var changed = ProcessSwapResponses(now);
+
+        if (s.Timer.Phase == "PLANNING")
+        {
+            if (now >= _phaseDeadline) AdvanceGroup(now);
+            else if (changed) PublishSession();
+            return;
+        }
 
         if (s.Timer.Phase == "FINALIZATION")
         {
@@ -610,7 +639,7 @@ public class MockEngine
 
         foreach (var p in s.PickOrderSwaps)
         {
-            var valid = s.Timer.Phase == "BAN_PICK" && CanSwapPickOrder(me) && CanSwapPickOrder(p.CellId);
+            var valid = (s.Timer.Phase == "BAN_PICK" || s.Timer.Phase == "PLANNING") && CanSwapPickOrder(me) && CanSwapPickOrder(p.CellId);
             if (!valid)
             {
                 p.State = "INVALID";

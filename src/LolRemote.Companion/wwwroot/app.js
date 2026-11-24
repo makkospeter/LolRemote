@@ -242,7 +242,8 @@ function onStateChanged() {
   ].join('|');
   if (key !== app.lastPhaseKey) {
     const isReady = snap?.phase === 'ReadyCheck' && snap?.readyCheck?.response === 'None';
-    const myTurn = !!snap?.champSelect?.myAction;
+    const myTurn = !!snap?.champSelect?.myAction && snap.champSelect.myAction.type !== 'intent';
+    if (app.lastPhaseKey && (app.sheet?.type === 'champ' || app.sheet?.type === 'confirm')) closeSheet();
     if (isReady) notify('ready');
     else if (myTurn) notify('turn');
     else if (snap?.champSelect?.incoming) notify('incoming');
@@ -396,6 +397,11 @@ function updateTimers() {
 }
 
 function render() {
+  if (app.pointerDown) {
+    app.renderPending = true;
+    return;
+  }
+  app.renderPending = false;
   renderConnection();
   const main = document.getElementById('main');
   const html = viewMain();
@@ -549,6 +555,16 @@ function viewChampSelect(cs) {
       <div class="turn-head"><span class="label">MINDEN PICK KÉSZ</span><span class="timer" data-timer></span></div>
       <p>Mindjárt indul a játék. Még cserélhetsz, és állíthatsz spellt, rúnát.</p>
     </section>`;
+  } else if (action && action.type === 'intent') {
+    turn = `<section class="card turn intent">
+      <div class="turn-head"><span class="label">TERVEZÉS · KIVEL JÁTSZANÁL?</span><span class="timer" data-timer></span></div>
+      <button class="turn-choice" data-action="open-champs">
+        ${avatar(action.championId, action.championName, 'lg')}
+        <span>${action.championName ? esc(action.championName) : 'Jelöld ki a szándékod'}</span>
+        <span class="chev">›</span>
+      </button>
+      <p class="turn-note">Ez csak jelzés a csapatnak, nem ban és nem lock. A bannolás a következő körben jön.</p>
+    </section>`;
   } else if (action) {
     const isBan = action.type === 'ban';
     turn = `<section class="card turn ${isBan ? 'ban' : 'pick'}">
@@ -605,7 +621,7 @@ function viewChampSelect(cs) {
       <button class="tile wide" data-action="open-swaps"><span class="key">Csere csapattárssal ${swapCount ? `<span class="badge">${swapCount}</span>` : ''}</span><span class="sub">${swapCount ? 'Champion vagy pick sorrend csere' : 'Most nincs elérhető csere'}</span></button>
     </section>`;
 
-  return mode + turn + incoming + teams + bans + viewCounters(cs) + viewQuickBuild(cs) + loadout;
+  return mode + turn + incoming + viewBanSuggestions(cs) + teams + bans + viewCounters(cs) + viewQuickBuild(cs) + loadout;
 }
 
 function enemyIds(cs) {
@@ -726,7 +742,7 @@ function viewCounters(cs) {
       body = `<div class="counter-empty">${esc(entry.error)} <button class="linklike" data-action="retry-counters" data-id="${esc(target.id)}">Újra</button></div>`;
     } else {
       const d = entry.data;
-      const canPick = cs.myAction?.type === 'pick';
+      const canPick = cs.myAction?.type === 'pick' || cs.myAction?.type === 'intent';
       const label = d.isMe
         ? `Neked nehéz ellenfelek · ${d.position}`
         : `Jók ${d.championName} ellen · ${d.position}`;
@@ -878,8 +894,9 @@ function renderSheet(force) {
   const cs = app.snapshot?.champSelect;
   if (app.sheet.type === 'champ') {
     if (force || !content.querySelector('.search')) {
-      const isBan = cs?.myAction?.type === 'ban';
-      content.innerHTML = `<div class="sheet-head"><h2>${isBan ? 'Kit bannolsz?' : 'Kit választasz?'}</h2><button class="close" data-action="close-sheet" aria-label="Bezár">✕</button></div>
+      const kind = cs?.myAction?.type;
+      const title = kind === 'ban' ? 'Kit bannolsz?' : kind === 'intent' ? 'Kivel szeretnél játszani?' : 'Kit választasz?';
+      content.innerHTML = `<div class="sheet-head"><h2>${title}</h2><button class="close" data-action="close-sheet" aria-label="Bezár">✕</button></div>
         <input class="search" type="search" placeholder="Keresés név szerint…" autocomplete="off" autocorrect="off" spellcheck="false" data-search>
         <div class="grid" data-grid></div>`;
       renderChampGrid();
@@ -987,6 +1004,65 @@ function renderChampGrid() {
     : '<div class="empty-note">Nincs találat.</div>';
 }
 
+async function hoverAndConfirm(id, name, cs) {
+  const intent = cs?.myAction?.type === 'intent';
+  const result = await run('hover', { championId: id }, intent ? `Szándék: ${name}` : null);
+  if (result && !result.error && !intent) openSheet({ type: 'confirm', championId: id, name });
+}
+
+function banSuggestKey(cs) {
+  const showing = cs.timerPhase === 'PLANNING' || cs.myAction?.type === 'ban';
+  if (!showing) return null;
+  return `${cs.myIntentId || 0}|${cs.myPosition || ''}|${(cs.unavailable || []).length}|${(cs.allyHovers || []).slice().sort().join(',')}`;
+}
+
+async function loadBanSuggestions(key) {
+  app.banSuggest = { key, loading: true };
+  render();
+  const result = await command('ban-suggestions');
+  if (app.banSuggest?.key !== key) return;
+  app.banSuggest = result.error ? { key, error: result.error } : { key, data: result.data };
+  render();
+}
+
+function viewBanSuggestions(cs) {
+  const key = banSuggestKey(cs);
+  if (!key) return '';
+  const current = app.banSuggest;
+  if (!current || (current.key !== key && !current.loading)) setTimeout(() => loadBanSuggestions(key), 0);
+  const canBan = cs.myAction?.type === 'ban';
+  const head = `<div class="card-head"><h3>Mit bannolj?</h3><span class="source">OP.GG</span></div>`;
+  if (!current || current.loading || (current.key !== key && !current.data)) {
+    return `<section class="card bansug">${head}<div class="counter-empty"><span class="mini-spin"></span>Javaslat betöltése…</div></section>`;
+  }
+  if (current.error) {
+    return `<section class="card bansug">${head}<div class="counter-empty">${esc(current.error)} <button class="linklike" data-action="retry-bans">Újra</button></div></section>`;
+  }
+  const d = current.data;
+  const unavailable = new Set([...(cs.unavailable || []), ...(cs.allyHovers || [])]);
+  const row = (c, i) => {
+    if (unavailable.has(c.championId)) return '';
+    const inner = `<span class="rank">${i + 1}</span>
+      ${avatar(c.championId, c.name, 'sm')}
+      <span class="counter-name">${esc(c.name)}${c.both ? ' <i class="both">★</i>' : ''}<small>${esc(c.detail)}</small></span>
+      ${canBan ? '<span class="pick-tag ban">BAN ›</span>' : ''}`;
+    return canBan
+      ? `<button class="counter-row clickable" data-action="ban-suggest" data-id="${esc(c.championId)}" data-name="${esc(c.name)}" ${app.busy ? 'disabled' : ''}>${inner}</button>`
+      : `<div class="counter-row">${inner}</div>`;
+  };
+  const best = d.best && !unavailable.has(d.best.championId)
+    ? `<div class="ban-best">Legjobb ban most: <b>${esc(d.best.name)}</b>${canBan ? ` <button class="btn danger small" data-action="ban-suggest" data-id="${esc(d.best.championId)}" data-name="${esc(d.best.name)}" ${app.busy ? 'disabled' : ''}>Kijelöl</button>` : ''}</div>`
+    : '';
+  const threats = d.intentName
+    ? `<div class="counter-label">Ellened (${esc(d.intentName)}, ${esc(d.position)}) a legerősebbek</div>`
+      + (d.threats?.length ? d.threats.map(row).join('') : `<div class="counter-empty">${esc(d.threatError || 'Nincs elég adat.')}</div>`)
+    : '<div class="counter-hint">Jelöld ki, kivel játszanál, és megmutatom, ki a legveszélyesebb ellene.</div>';
+  const meta = `<div class="counter-label">Meta a te rolodban (${esc(d.position)})</div>`
+    + (d.meta?.length ? d.meta.map(row).join('') : `<div class="counter-empty">${esc(d.metaError || 'Nincs adat.')}</div>`);
+  const note = `<div class="counter-hint">${canBan ? 'Koppints egyre: kijelöli bannolásra, és rákérdez.' : 'A ban körben ezekre koppintva tudsz bannolni.'} ★ = erős a metában és ellened is. A csapattársaid kijelölt championjai és a már bannoltak nem szerepelnek.</div>`;
+  return `<section class="card bansug">${head}${best}${threats}${meta}${note}</section>`;
+}
+
 async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator && !app.wakeLock) {
@@ -996,11 +1072,30 @@ async function requestWakeLock() {
   } catch { }
 }
 
+let pointerTimer = null;
+function releasePointer(delay) {
+  clearTimeout(pointerTimer);
+  pointerTimer = setTimeout(() => {
+    app.pointerDown = false;
+    if (app.renderPending) render();
+  }, delay);
+}
+document.addEventListener('pointerdown', event => {
+  if (!event.target.closest('[data-action]')) return;
+  app.pointerDown = true;
+  releasePointer(1500);
+}, true);
+document.addEventListener('pointerup', () => { if (app.pointerDown) releasePointer(120); }, true);
+document.addEventListener('pointercancel', () => { if (app.pointerDown) releasePointer(0); }, true);
+
 document.addEventListener('click', async event => {
   requestWakeLock();
   unlockAudio();
   const target = event.target.closest('[data-action]');
   if (!target) return;
+  clearTimeout(pointerTimer);
+  app.pointerDown = false;
+  if (app.renderPending) render();
   const action = target.dataset.action;
   const cs = app.snapshot?.champSelect;
 
@@ -1018,16 +1113,18 @@ document.addEventListener('click', async event => {
       const id = Number(target.dataset.id);
       const name = (app.champions || []).find(c => c.id === id)?.name || '';
       closeSheet();
-      const result = await run('hover', { championId: id });
-      if (result && !result.error) openSheet({ type: 'confirm', championId: id, name });
+      await hoverAndConfirm(id, name, cs);
       break;
     }
-    case 'counter-pick': {
-      const id = Number(target.dataset.id);
-      const result = await run('hover', { championId: id });
-      if (result && !result.error) openSheet({ type: 'confirm', championId: id, name: target.dataset.name || '' });
+    case 'counter-pick':
+    case 'ban-suggest': {
+      await hoverAndConfirm(Number(target.dataset.id), target.dataset.name || '', cs);
       break;
     }
+    case 'retry-bans':
+      app.banSuggest = null;
+      render();
+      break;
     case 'confirm-lock': {
       closeSheet();
       const isBan = cs?.myAction?.type === 'ban';

@@ -18,7 +18,7 @@ await fetch(`${base}/__test/phase?name=ReadyCheck`);
 await page.waitForSelector('.accept-btn', { timeout: 5000 });
 check('Lekérdezéses módban is megjelenik a ready check', true);
 await page.click('.accept-btn', { force: true });
-await page.waitForSelector('text=TE JÖSSZ · BAN', { timeout: 5000 });
+await page.waitForSelector('text=TERVEZÉS', { timeout: 5000 });
 check('Lekérdezéses módban az elfogadás és a champ select működik', true);
 const info = await (await fetch(`${base}/setup-info`)).json();
 check(`A telefon csatlakozottnak látszik a PC-n (${info.phones})`, info.phones >= 1);

@@ -549,7 +549,7 @@ public sealed class PhoneServer
         if (c is null) return ("Nincs kapcsolat a League klienssel.", null);
 
         var commandName = Str(message, "cmd");
-        if (commandName is not ("counters" or "build" or "champions" or "rune-recommendations"))
+        if (commandName is not ("counters" or "build" or "champions" or "rune-recommendations" or "ban-suggestions"))
             EventLog.WriteFile($"[telefon] {message.GetRawText()}");
 
         switch (commandName)
@@ -592,6 +592,8 @@ public sealed class PhoneServer
                 return await c.CountersAsync((int)Num(message, "championId"));
             case "build":
                 return await c.BuildAsync((int)Num(message, "opponentId"));
+            case "ban-suggestions":
+                return await c.BanSuggestionsAsync();
             case "champions":
                 var list = await c.AvailableChampionsAsync();
                 return (null, list.Select(x => new { id = x.Id, name = x.Name }).ToList());

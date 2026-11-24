@@ -80,7 +80,7 @@ app.MapGet("/lol-champ-select/v1/bannable-champion-ids", (MockEngine engine) =>
 
 foreach (var verb in new[] { "request", "accept", "decline", "cancel" })
 {
-    app.MapPost($"/lol-champ-select/v1/session/trades/{{id:int}}/{verb}", (int id, MockEngine engine) =>
+    app.MapPost($"/lol-champ-select/v1/session/champion-swaps/{{id:int}}/{verb}", (int id, MockEngine engine) =>
         ToResult(engine.SwapCommand(true, id, verb)));
     app.MapPost($"/lol-champ-select/v1/session/pick-order-swaps/{{id:int}}/{verb}", (int id, MockEngine engine) =>
         ToResult(engine.SwapCommand(false, id, verb)));

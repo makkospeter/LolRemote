@@ -30,8 +30,8 @@ const world = {
 
 function freshChampSelect() {
   return {
-    timerPhase: 'BAN_PICK',
-    action: { type: 'ban', championId: 0 },
+    timerPhase: 'PLANNING',
+    action: { type: 'intent', championId: 0 },
     myTeam: [
       { cellId: 0, position: 'Top', championId: 0, intentId: 0, isMe: false },
       { cellId: 1, position: 'Jungle', championId: 0, intentId: 64, isMe: false },
@@ -64,6 +64,9 @@ function snapshot() {
     champSelect: cs && {
       timerPhase: cs.timerPhase,
       myChampionId: myChamp,
+      myIntentId: cs.myTeam[2].intentId,
+      myPosition: 'mid',
+      allyHovers: cs.myTeam.filter(m => !m.isMe).map(m => m.championId || m.intentId).filter(Boolean),
       myAction: cs.action && { type: cs.action.type, championId: cs.action.championId, championName: cs.action.championId ? nameOf(cs.action.championId) : null },
       myTeam: cs.myTeam.map(m => ({ ...m, championName: m.championId ? nameOf(m.championId) : null, intentName: m.intentId ? nameOf(m.intentId) : null })),
       theirTeam: cs.theirTeam.map(id => ({ championId: id, championName: id ? nameOf(id) : null })),
@@ -87,7 +90,7 @@ function execute(msg) {
       if (world.phase !== 'ReadyCheck') return { error: 'Nincs elfogadható meccs.' };
       world.readyResponse = 'Accepted';
       addLog('Elfogadtad a meccset.', 'Cyan');
-      setTimeout(() => { world.phase = 'ChampSelect'; world.cs = freshChampSelect(); addLog('>>> TE JÖSSZ: BAN', 'Green'); broadcast(); }, 400);
+      setTimeout(() => { world.phase = 'ChampSelect'; world.cs = freshChampSelect(); addLog('Tervezés', 'Green'); broadcast(); }, 400);
       return {};
     case 'decline':
       world.phase = 'Lobby';
@@ -96,11 +99,37 @@ function execute(msg) {
       return { data: champions };
     case 'hover':
       if (!cs?.action) return { error: 'Most nem te jössz.' };
+      if (cs.action.type === 'intent') {
+        cs.action.championId = msg.championId;
+        cs.myTeam[2].intentId = msg.championId;
+        setTimeout(() => {
+          if (world.cs !== cs || cs.timerPhase !== 'PLANNING') return;
+          cs.timerPhase = 'BAN_PICK';
+          cs.action = { type: 'ban', championId: 0 };
+          addLog('>>> TE JÖSSZ: BAN', 'Green');
+          broadcast();
+        }, 900);
+        return {};
+      }
+      if (cs.action.type === 'ban' && cs.myTeam.some(m => !m.isMe && m.intentId === msg.championId)) return { error: 'Csapattárs választása, nem bannolható.' };
       cs.action.championId = msg.championId;
       if (cs.action.type === 'pick') cs.myTeam[2].intentId = msg.championId;
       addLog(`Kijelölve: ${nameOf(msg.championId)}`, 'Cyan');
       return {};
+    case 'ban-suggestions':
+      return {
+        data: {
+          position: 'mid', intentId: cs.myTeam[2].intentId, intentName: nameOf(cs.myTeam[2].intentId),
+          best: { championId: 99, name: 'Lux' },
+          threats: [[99, 'Lux', '54.1% nyerés ellened · 812 meccs', true], [1, 'Annie', '53.0% nyerés ellened · 400 meccs', false], [64, 'Lee Sin', 'x', false]]
+            .map(([championId, name, detail, both]) => ({ championId, name, detail, both })),
+          meta: [[99, 'Lux', 'Tier 1 · 51.5% nyerés · 12% ban', true], [25, 'Morgana', 'Tier 1 · 51% nyerés · 20% ban', false]]
+            .map(([championId, name, detail, both]) => ({ championId, name, detail, both })),
+          source: 'OP.GG'
+        }
+      };
     case 'lock':
+      if (cs?.action?.type === 'intent') return { error: 'Ez még a tervezés.' };
       if (!cs?.action?.championId) return { error: 'Előbb jelölj ki egy championt.' };
       if (cs.action.type === 'ban') {
         cs.myBans.push(nameOf(cs.action.championId));

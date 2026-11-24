@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0..\.."
 if not exist logs mkdir logs
+taskkill /im LolRemote.exe /f >nul 2>&1
 set "MOCKARGS="
 if /i "%~1"=="practice" set "MOCKARGS=--practice"
 if /i "%~1"=="strict" set "MOCKARGS=--strict-lock"

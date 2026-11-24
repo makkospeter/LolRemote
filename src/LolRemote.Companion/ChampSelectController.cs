@@ -298,11 +298,45 @@ public sealed class ChampSelectController
         return $"{PositionText(m.AssignedPosition)} ({champ})";
     }
 
+    static bool IsPlanning(ChampSelectSession? s) => s?.Timer.Phase == "PLANNING";
+
     static ChampSelectAction? MyActionIn(ChampSelectSession? s) =>
-        s?.Actions.SelectMany(g => g)
+        s is null || IsPlanning(s) ? null : s.Actions.SelectMany(g => g)
             .FirstOrDefault(a => a.ActorCellId == s.LocalPlayerCellId && a.IsInProgress && !a.Completed);
 
     public ChampSelectAction? MyCurrentAction() => MyActionIn(Session);
+
+    static ChampSelectAction? MyPickAction(ChampSelectSession? s) =>
+        s?.Actions.SelectMany(g => g).FirstOrDefault(a => a.Type == "pick" && a.ActorCellId == s.LocalPlayerCellId && !a.Completed);
+
+    public ChampSelectAction? MyIntentAction() => IsPlanning(Session) ? MyPickAction(Session) : null;
+
+    public HashSet<int> AllyHoveredIds()
+    {
+        var result = new HashSet<int>();
+        var s = Session;
+        if (s is null) return result;
+        foreach (var m in s.MyTeam)
+        {
+            if (m.CellId == s.LocalPlayerCellId) continue;
+            if (m.ChampionPickIntent > 0) result.Add(m.ChampionPickIntent);
+            if (m.ChampionId > 0) result.Add(m.ChampionId);
+        }
+        foreach (var a in s.Actions.SelectMany(g => g))
+            if (a.Type == "pick" && a.ChampionId > 0 && a.ActorCellId != s.LocalPlayerCellId && s.MyTeam.Any(m => m.CellId == a.ActorCellId))
+                result.Add(a.ChampionId);
+        return result;
+    }
+
+    public int MyIntentId()
+    {
+        var s = Session;
+        var me = Me;
+        if (s is null || me is null) return 0;
+        var pick = MyPickAction(s);
+        if (pick is not null && pick.ChampionId > 0) return pick.ChampionId;
+        return me.ChampionPickIntent;
+    }
 
     public (HashSet<int> MyBans, HashSet<int> TheirBans) BannedChampions()
     {
@@ -431,9 +465,11 @@ public sealed class ChampSelectController
             else if (t.State == "SENT")
                 result.Add(new SwapOption($"Kérés visszavonása (champion csere, {AllyLabel(s, t.CellId)})", true, t.Id, "cancel"));
         }
+        var picksDone = s.Actions.SelectMany(g => g).Where(a => a.Type == "pick" && a.Completed).Select(a => a.ActorCellId).ToHashSet();
+        var canSwapOrder = !picksDone.Contains(s.LocalPlayerCellId) && s.Timer.Phase != "FINALIZATION";
         foreach (var p in s.PickOrderSwaps!)
         {
-            if (p.State == "AVAILABLE")
+            if (p.State == "AVAILABLE" && canSwapOrder && !picksDone.Contains(p.CellId))
                 result.Add(new SwapOption($"Pick sorrend csere: {AllyLabel(s, p.CellId)}", false, p.Id, "request"));
             else if (p.State == "SENT")
                 result.Add(new SwapOption($"Kérés visszavonása (pick sorrend, {AllyLabel(s, p.CellId)})", false, p.Id, "cancel"));
@@ -444,11 +480,22 @@ public sealed class ChampSelectController
     public async Task<List<(int Id, string Name)>> AvailableChampionsAsync()
     {
         var action = MyCurrentAction();
-        var path = action?.Type == "ban"
+        var isBan = action?.Type == "ban";
+        var path = isBan
             ? "/lol-champ-select/v1/bannable-champion-ids"
             : "/lol-champ-select/v1/pickable-champion-ids";
-        var ids = await _lcu.GetAsync<int[]>(path) ?? Array.Empty<int>();
+        int[] ids;
+        try
+        {
+            ids = await _lcu.GetAsync<int[]>(path) ?? Array.Empty<int>();
+        }
+        catch (Exception)
+        {
+            ids = Array.Empty<int>();
+        }
+        if (ids.Length == 0 && isBan) ids = _championNames.Keys.ToArray();
         var unavailable = UnavailableChampionIds();
+        if (isBan) unavailable.UnionWith(AllyHoveredIds());
         return ids.Where(id => id > 0 && !unavailable.Contains(id)).Select(id => (id, ChampionName(id))).OrderBy(c => c.Item2).ToList();
     }
 
@@ -789,6 +836,129 @@ public sealed class ChampSelectController
         }
     }
 
+    static string NormName(string name) => new string(name.Where(char.IsLetter).Select(char.ToLowerInvariant).ToArray());
+
+    int ChampionIdByName(string name)
+    {
+        var wanted = NormName(name);
+        if (wanted.Length == 0) return 0;
+        foreach (var (id, local) in _championNames)
+            if (NormName(local) == wanted) return id;
+        foreach (var (id, alias) in _championAliases)
+            if (NormName(alias) == wanted) return id;
+        if (wanted.StartsWith("nunu")) return ChampionIdByName("Nunu");
+        if (wanted == "wukong") return ChampionIdByName("MonkeyKing");
+        return 0;
+    }
+
+    public async Task<(string? Error, object? Data)> BanSuggestionsAsync()
+    {
+        if (Session is null) return ("Ban javaslatot champ selectben lehet kérni.", null);
+        if (Counters is null) return ("Az OP.GG adatok nem érhetők el.", null);
+        var intent = MyIntentId();
+        var position = MyOpggPosition;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        if (position is null && intent > 0)
+        {
+            try
+            {
+                position = (await Counters.InfoAsync(intent, ChampionName(intent), AliasOf(intent), timeout.Token)).Positions.FirstOrDefault();
+            }
+            catch (Exception)
+            {
+            }
+        }
+        if (position is null) return ("Nem tudom a rolodat: jelölj ki egy championt, és utána mutatom a javaslatot.", null);
+
+        var blocked = UnavailableChampionIds();
+        blocked.UnionWith(AllyHoveredIds());
+        if (intent > 0) blocked.Add(intent);
+
+        var threats = new List<(int Id, string Name, double EnemyWin, int Games, double Score)>();
+        string? threatError = null;
+        if (intent > 0)
+        {
+            try
+            {
+                var data = await Counters.MatchupAsync(intent, ChampionName(intent), AliasOf(intent), intent, ChampionName(intent), AliasOf(intent), position, timeout.Token);
+                var maxGames = data.Counters.Count == 0 ? 0 : data.Counters.Max(c => c.Games);
+                var minGames = Math.Max(30, (int)(maxGames * 0.05));
+                threats = data.Counters
+                    .Where(c => c.Games >= minGames && !blocked.Contains(c.ChampionId))
+                    .Select(c => (c.ChampionId, LocalName(c.ChampionId, c.Name), Math.Round((1 - c.WinRate) * 100, 1), c.Games, Smoothed(c.Games - c.Wins, c.Games)))
+                    .OrderByDescending(c => c.Item5)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                threatError = $"A matchup adatok nem érhetők el: {ex.Message}";
+            }
+        }
+
+        var meta = new List<(int Id, string Name, MetaStat Stat)>();
+        string? metaError = null;
+        try
+        {
+            foreach (var m in await Counters.LaneMetaAsync(position, timeout.Token))
+            {
+                if (m.IsRip) continue;
+                var id = ChampionIdByName(m.Name);
+                if (id == 0 || blocked.Contains(id)) continue;
+                meta.Add((id, ChampionName(id), m));
+            }
+        }
+        catch (Exception ex)
+        {
+            metaError = $"A meta adatok nem érhetők el: {ex.Message}";
+        }
+
+        var threatIds = threats.Take(15).Select(t => t.Id).ToHashSet();
+        var metaIds = meta.Where(m => m.Stat.Tier <= 2).Select(m => m.Id).ToHashSet();
+        var metaRank = meta.Select((m, i) => (m.Id, i)).ToDictionary(x => x.Id, x => x.i);
+
+        double MetaScore(MetaStat st) => (6 - st.Tier) * 0.04 + (st.WinRate - 0.5) * 2 + st.BanRate * 0.3 + Math.Min(st.PickRate, 0.15);
+
+        var threatItems = threats.Take(6).Select(t => new
+        {
+            championId = t.Id,
+            name = t.Name,
+            detail = $"{t.EnemyWin}% nyerés ellened · {t.Games} meccs",
+            both = metaIds.Contains(t.Id)
+        }).ToList();
+        var metaItems = meta
+            .OrderByDescending(m => MetaScore(m.Stat) + (threatIds.Contains(m.Id) ? 0.05 : 0))
+            .Take(6)
+            .Select(m => new
+            {
+                championId = m.Id,
+                name = m.Name,
+                detail = $"Tier {m.Stat.Tier} · {Math.Round(m.Stat.WinRate * 100, 1)}% nyerés · {Math.Round(m.Stat.BanRate * 100)}% ban",
+                both = threatIds.Contains(m.Id)
+            }).ToList();
+
+        var top = threats.Take(15)
+            .Select(t => (t.Id, t.Name, Score: (t.Score - 0.5) * 4 + (metaRank.TryGetValue(t.Id, out var r) ? Math.Max(0, 0.06 - r * 0.003) : 0)))
+            .Concat(meta.Take(10).Select(m => (m.Id, m.Name, Score: MetaScore(m.Stat) * 0.5 - 0.05)))
+            .GroupBy(x => x.Id)
+            .Select(g => (Id: g.Key, Name: g.First().Name, Score: g.Sum(x => x.Score)))
+            .OrderByDescending(x => x.Score)
+            .FirstOrDefault();
+
+        return (null, new
+        {
+            position = OpggCounters.PositionText(position),
+            intentId = intent,
+            intentName = intent > 0 ? ChampionName(intent) : null,
+            best = top.Id == 0 ? null : new { championId = top.Id, name = top.Name },
+            threats = threatItems,
+            threatError,
+            meta = metaItems,
+            metaError,
+            excludedAllies = AllyHoveredIds().Count,
+            source = "OP.GG"
+        });
+    }
+
     async Task<int> GuessLaneOpponentAsync(int myChampion, CancellationToken ct)
     {
         if (Session is null || Counters is null) return 0;
@@ -896,9 +1066,21 @@ public sealed class ChampSelectController
 
     public async Task<string?> HoverAsync(int championId)
     {
+        if (championId <= 0) return "Ismeretlen champion.";
+        var intent = MyIntentAction();
+        if (intent is not null)
+        {
+            if (UnavailableChampionIds().Contains(championId))
+                return $"{ChampionName(championId)} nem választható.";
+            EventLog.WriteFile($"[lcu] intent action={intent.Id} champion={championId}");
+            var intentError = await SendAsync(_lcu.PatchAsync($"/lol-champ-select/v1/session/actions/{intent.Id}", new { championId }));
+            if (intentError is null) _log.Add($"Pick szándék: {ChampionName(championId)} (a csapat látja, még nem lock)", ConsoleColor.Cyan);
+            return intentError;
+        }
         var action = MyCurrentAction();
         if (action is null) return "Most nem te jössz.";
-        if (championId <= 0) return "Ismeretlen champion.";
+        if (action.Type == "ban" && AllyHoveredIds().Contains(championId))
+            return $"{ChampionName(championId)} egy csapattársad választása, őt nem lehet bannolni.";
         if (UnavailableChampionIds().Contains(championId))
             return $"{ChampionName(championId)} nem választható: már bannolták vagy valaki más választotta.";
         EventLog.WriteFile($"[lcu] hover {action.Type} action={action.Id} champion={championId}");
@@ -909,6 +1091,7 @@ public sealed class ChampSelectController
 
     public async Task<string?> LockAsync()
     {
+        if (MyIntentAction() is not null) return "Ez még a tervezés: a szándékot a csapat látja. Lockolni / bannolni a saját körödben tudsz.";
         var action = MyCurrentAction();
         if (action is null) return "Most nem te jössz.";
         if (action.ChampionId == 0) return "Előbb jelölj ki egy championt.";
@@ -974,7 +1157,7 @@ public sealed class ChampSelectController
         {
             lock (_cancelledRequests) _cancelledRequests.Add(id);
         }
-        var kind = isTrade ? "trades" : "pick-order-swaps";
+        var kind = isTrade ? "champion-swaps" : "pick-order-swaps";
         EventLog.WriteFile($"[lcu] {kind} {id} {verb}");
         var error = await SendAsync(_lcu.PostAsync($"/lol-champ-select/v1/session/{kind}/{id}/{verb}"));
         var what = isTrade ? "champion csere" : "pick sorrend csere";
@@ -1017,12 +1200,20 @@ public sealed class ChampSelectController
                 timerPhase = s.Timer.Phase,
                 myChampionId = MyChampionId(),
                 noPickAction = NoPickAvailable,
-                myAction = mine is null ? null : new
+                myAction = mine is not null ? new
                 {
                     type = mine.Type,
                     championId = mine.ChampionId,
                     championName = mine.ChampionId == 0 ? null : ChampionName(mine.ChampionId)
-                },
+                } : MyIntentAction() is not null ? new
+                {
+                    type = "intent",
+                    championId = MyIntentId(),
+                    championName = MyIntentId() == 0 ? null : ChampionName(MyIntentId())
+                } : null,
+                myIntentId = MyIntentId(),
+                myPosition = MyOpggPosition is { } myPos ? OpggCounters.PositionText(myPos) : null,
+                allyHovers = AllyHoveredIds().ToList(),
                 myTeam = s.MyTeam.Select(m => new
                 {
                     cellId = m.CellId,
