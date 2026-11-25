@@ -545,7 +545,9 @@ function viewReadyCheck(readyCheck) {
 function viewChampSelect(cs) {
   const action = cs.myAction;
   let turn;
-  if (cs.noPickAction && !action) {
+  if (cs.random && !action) {
+    turn = viewRandomTurn(cs);
+  } else if (cs.noPickAction && !action) {
     turn = `<section class="card turn wait">
       <div class="turn-head"><span class="label">VÁLASSZ A PC-N</span><span class="timer" data-timer></span></div>
       <p>Ebben a módban a kliens nem ad pick-lehetőséget a telefonnak. Válassz championt a gépen; a spellt és a rúnát innen is állíthatod.</p>
@@ -609,19 +611,71 @@ function viewChampSelect(cs) {
 
   const hasBans = (cs.myBans || []).length || (cs.theirBans || []).length;
   const bans = hasBans ? `<div class="bans">Bannok: <b>${esc((cs.myBans || []).join(', ') || '–')}</b> · ellenfél: <b>${esc((cs.theirBans || []).join(', ') || '–')}</b></div>` : '';
-  const mode = app.snapshot?.mode ? `<div class="mode-badge">${esc(app.snapshot.mode)}</div>` : '';
+  const modeText = cs.modeKind && !['classic', 'practice', 'other'].includes(cs.modeKind) ? cs.modeTitle : app.snapshot?.mode;
+  const mode = modeText ? `<div class="mode-badge">${esc(modeText)}</div>` : '';
+  const laneMode = !cs.modeKind || cs.modeKind === 'classic' || cs.modeKind === 'practice' || cs.modeKind === 'other';
 
   const currentRune = (cs.runePages || []).find(p => p.current);
   const swapCount = (cs.swapOptions || []).length;
   const loadout = `<section class="loadout">
       <button class="tile" data-action="open-spell" data-slot="1"><span class="key">D spell</span><span class="val">${esc(cs.spell1?.name || '–')}</span><span class="chev">›</span></button>
       <button class="tile" data-action="open-spell" data-slot="2"><span class="key">F spell</span><span class="val">${esc(cs.spell2?.name || '–')}</span><span class="chev">›</span></button>
-      <button class="tile wide" data-action="open-runes"><span class="key">Rúnaoldal</span><span class="val">${esc(currentRune?.name || '–')}</span><span class="sub">${esc(currentRune?.summary || '')}</span></button>
+      ${cs.runesDisabled
+        ? '<div class="tile wide muted"><span class="key">Rúnák</span><span class="sub">Ebben a módban nincsenek rúnák – az augmentokat a játékban választod.</span></div>'
+        : `<button class="tile wide" data-action="open-runes"><span class="key">Rúnaoldal</span><span class="val">${esc(currentRune?.name || '–')}</span><span class="sub">${esc(currentRune?.summary || '')}</span></button>`}
       ${viewTemplateTile(cs.template)}
       <button class="tile wide" data-action="open-swaps"><span class="key">Csere csapattárssal ${swapCount ? `<span class="badge">${swapCount}</span>` : ''}</span><span class="sub">${swapCount ? 'Champion vagy pick sorrend csere' : 'Most nincs elérhető csere'}</span></button>
     </section>`;
 
-  return mode + turn + incoming + viewBanSuggestions(cs) + teams + bans + viewCounters(cs) + viewQuickBuild(cs) + loadout;
+  if (cs.random && action) {
+    const r = cs.random;
+    const useful = (r.allowRerolling && r.rerollsRemaining > 0) || (r.benchEnabled && (r.bench || []).length);
+    if (useful) turn += viewRandomTurn(cs, true);
+  }
+  const middle = laneMode ? viewBanSuggestions(cs) + teams + bans + viewCounters(cs) : teams + bans + viewModeBuild(cs);
+  return mode + turn + incoming + middle + viewQuickBuild(cs) + loadout;
+}
+
+function viewRandomTurn(cs, compact) {
+  const r = cs.random;
+  const me = (cs.myTeam || []).find(m => m.isMe);
+  const reroll = r.allowRerolling
+    ? `<button class="btn ${r.rerollsRemaining > 0 ? 'primary' : ''}" data-action="reroll" ${app.busy || r.rerollsRemaining <= 0 ? 'disabled' : ''}>🎲 Újradobás${r.rerollsRemaining > 0 ? ` (${r.rerollsRemaining})` : ' – elfogyott'}</button>`
+    : '';
+  const bench = r.benchEnabled
+    ? `<div class="bench-title">Pad (bench) – koppints a cseréhez</div>
+       <div class="bench">${(r.bench || []).length
+         ? r.bench.map(b => `<button class="bench-champ" data-action="bench-swap" data-id="${esc(b.championId)}" data-name="${esc(b.name)}" ${app.busy ? 'disabled' : ''}>${avatar(b.championId, b.name, 'md')}<span>${esc(b.name)}</span></button>`).join('')
+         : '<p class="muted small">A pad most üres.</p>'}</div>`
+    : '';
+  if (compact) return `<section class="card turn random">${reroll}${bench}</section>`;
+  return `<section class="card turn random">
+      <div class="turn-head"><span class="label">${esc(cs.modeTitle || 'VÉLETLEN CHAMPION')}</span><span class="timer" data-timer></span></div>
+      <div class="random-me">${avatar(me?.championId, me?.championName, 'lg')}<div><div class="name">${esc(me?.championName || '…')}</div><div class="muted small">A te championod</div></div></div>
+      ${reroll}
+      ${bench}
+    </section>`;
+}
+
+function viewModeBuild(cs) {
+  ensureBuild(cs);
+  if (!cs.myChampionId) return '';
+  const b = app.build;
+  const head = `<div class="card-head"><h3>${esc(cs.modeTitle || 'Build')} ajánlás</h3><span class="source">OP.GG</span></div>`;
+  if (!b || b.loading) return `<section class="card modebuild">${head}<div class="counter-empty"><span class="mini-spin"></span>Betöltés…</div></section>`;
+  if (b.error || !b.data) return `<section class="card modebuild">${head}<div class="counter-empty">${esc(b.error || 'Nincs adat.')}</div></section>`;
+  const d = b.data;
+  const augments = (d.augments || []).length
+    ? `<div class="counter-label">Legjobb augmentok ${esc(d.championName)}-hoz</div>`
+      + d.augments.map((a, i) => `<div class="augment"><span class="tier${i < 3 ? ' t5' : ''}">${i + 1}</span><span><b>${esc(a.name)}</b><small>${esc(a.description)}</small><small class="aug-stat">OP.GG pont: ${esc(a.performance)} · népszerűség: ${esc(Math.round(a.popular * 100))}%</small></span></div>`).join('')
+    : '';
+  const items = (d.items || []).length
+    ? `<div class="counter-label">Fő itemek</div>` + d.items.map(i => `<div class="item-row">${esc(i.names)}<small>${i.games ? `${esc(i.winRate)}% · ${esc(i.games)} meccs` : ''}</small></div>`).join('')
+    : '';
+  const spells = (d.spells || []).length
+    ? `<div class="counter-label">Spellek</div>` + d.spells.map(sp => `<div class="item-row">${esc(sp.names)}<small>${sp.games ? `${esc(sp.winRate)}% · ${esc(sp.games)} meccs` : ''}</small></div>`).join('')
+    : '';
+  return `<section class="card modebuild">${head}${augments}${items}${spells}</section>`;
 }
 
 function enemyIds(cs) {
@@ -770,7 +824,7 @@ function viewQuickBuild(cs) {
   if (!b || b.loading) return `<div class="quick muted"><span class="mini-spin"></span>Ajánlott rúna és spell betöltése…</div>`;
   if (b.error || !b.data) return '';
   const spell = b.data.spells?.[0];
-  const rune = b.data.runes?.[0];
+  const rune = cs.runesDisabled ? null : b.data.runes?.[0];
   if (!spell && !rune) return '';
   const vs = b.data.opponentName ? ` vs ${esc(b.data.opponentName)}` : '';
   return `<button class="quick" data-action="apply-quick" ${app.busy ? 'disabled' : ''}>
@@ -931,7 +985,7 @@ function renderSheet(force) {
     const head = b?.data ? `Ajánlott párok · ${esc(b.data.championName)} ${esc(b.data.position)}${b.data.opponentName ? ` vs ${esc(b.data.opponentName)}` : ''}` : 'Ajánlott párok';
     html = `<div class="sheet-head"><h2>${slot === 1 ? 'D' : 'F'} spell</h2><button class="close" data-action="close-sheet" aria-label="Bezár">✕</button></div><div class="list">
       ${recHtml ? `<div class="list-head">${head}</div>${recHtml}<div class="list-head">Csak a ${slot === 1 ? 'D' : 'F'} spell cseréje</div>` : ''}
-      ${(app.snapshot?.spells || []).map(s =>
+      ${(app.snapshot?.spells || []).filter(s => !(cs?.modeKind === 'mayhem' && s.id === 3)).map(s =>
       `<button class="option ${s.id === current ? 'current' : ''}" data-action="pick-spell" data-id="${esc(s.id)}">
         <span>${esc(s.name)}</span>${s.id === current ? '<span class="tag">JELENLEGI</span>' : ''}
       </button>`).join('')}</div>`;
@@ -1187,11 +1241,17 @@ document.addEventListener('click', async event => {
       if (app.counterCache) delete app.counterCache[Number(target.dataset.id)];
       render();
       break;
+    case 'reroll':
+      await run('reroll', {}, 'Újradobva');
+      break;
+    case 'bench-swap':
+      await run('bench-swap', { championId: Number(target.dataset.id) }, `Csere: ${target.dataset.name || ''}`);
+      break;
     case 'apply-quick': {
       const d = app.build?.data;
       if (!d) break;
       const spell = d.spells?.[0];
-      const rune = d.runes?.[0];
+      const rune = cs?.runesDisabled ? null : d.runes?.[0];
       if (spell) {
         const [spell1, spell2] = orderSpells(spell.ids, cs);
         if (spell1 !== cs?.spell1?.id || spell2 !== cs?.spell2?.id) await run('spells', { spell1, spell2 });

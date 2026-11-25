@@ -17,6 +17,10 @@ public record ChampionInfo(string Key, List<string> Positions);
 
 public record MetaStat(string Name, int Tier, int Rank, double WinRate, double PickRate, double BanRate, int Games, bool IsRip);
 
+public record AugmentStat(string Name, string Description, int Tier, double Performance, double Popular);
+
+public record ItemSetStat(List<int> Ids, List<string> Names, int Games, int Wins);
+
 public record MatchupData(
     string Position,
     List<MatchupStat> Counters,
@@ -24,7 +28,11 @@ public record MatchupData(
     List<RuneStat> Runes,
     string? Tip,
     string? LaneAdvantage,
-    string? PlayStyle);
+    string? PlayStyle)
+{
+    public List<ItemSetStat> CoreItems { get; init; } = new();
+    public string GameMode { get; init; } = "ranked";
+}
 
 public sealed class OpggCounters : IDisposable
 {
@@ -155,31 +163,33 @@ public sealed class OpggCounters : IDisposable
         }
     }
 
-    public async Task<MatchupData> GeneralBuildAsync(int championId, string name, string? alias, string? position, CancellationToken ct)
+    public async Task<MatchupData> GeneralBuildAsync(int championId, string name, string? alias, string? position, CancellationToken ct, string gameMode = "ranked")
     {
         await _gate.WaitAsync(ct);
         try
         {
             var info = await InfoAsync(championId, name, alias, ct);
+            var ranked = gameMode is "ranked" or "flex";
             var pos = position ?? info.Positions.FirstOrDefault() ?? "mid";
-            var cacheKey = $"build|{championId}|{pos}";
+            var cacheKey = $"build|{championId}|{pos}|{gameMode}";
             if (_cache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow - cached.At < CacheTime)
                 return (MatchupData)cached.Value;
 
             var args = new Dictionary<string, object>
             {
-                ["game_mode"] = "ranked",
+                ["game_mode"] = gameMode,
                 ["champion"] = info.Key,
-                ["position"] = pos,
                 ["lang"] = "en_US",
                 ["desired_output_fields"] = new[]
                 {
                     "data.runes.{id,pick_rate,play,primary_page_id,primary_rune_ids[],secondary_page_id,secondary_rune_ids[],stat_mod_ids[],win}",
-                    "data.summoner_spells.{ids[],pick_rate,play,win}"
+                    "data.summoner_spells.{ids[],pick_rate,play,win}",
+                    "data.core_items.{ids[],ids_names[],pick_rate,play,win}"
                 }
             };
+            args["position"] = pos;
             var result = await CallAsync("lol_get_champion_analysis", args, ct);
-            DebugWriter?.Invoke($"opgg-build-{info.Key}-{pos}", result);
+            DebugWriter?.Invoke($"opgg-build-{info.Key}-{(ranked ? pos : gameMode)}", result);
             var text = TextOf(result);
 
             var spells = new List<SpellStat>();
@@ -204,7 +214,21 @@ public sealed class OpggCounters : IDisposable
                 runes.Add(new RuneStat(int.Parse(g[2].Value), int.Parse(g[4].Value), perks, int.Parse(g[7].Value), int.Parse(g[8].Value)));
             }
 
-            var build = new MatchupData(pos, new List<MatchupStat>(), spells, runes, null, null, null);
+            var items = new List<ItemSetStat>();
+            var coreClass = Regex.Match(text, @"class (\w*Core\w*):");
+            if (coreClass.Success)
+            {
+                foreach (var rec in Records(text, coreClass.Groups[1].Value))
+                {
+                    var ids = Regex.Matches(rec.GetValueOrDefault("ids") ?? "", @"\d+").Select(m => int.Parse(m.Value)).ToList();
+                    var names = Regex.Matches(rec.GetValueOrDefault("ids_names") ?? "", @"""((?:[^""\\]|\\.)*)""").Select(m => Regex.Unescape(m.Groups[1].Value)).ToList();
+                    int.TryParse(rec.GetValueOrDefault("play"), out var play);
+                    int.TryParse(rec.GetValueOrDefault("win"), out var win);
+                    if (ids.Count > 0) items.Add(new ItemSetStat(ids, names, play, win));
+                }
+            }
+
+            var build = new MatchupData(pos, new List<MatchupStat>(), spells, runes, null, null, null) { CoreItems = items, GameMode = gameMode };
             _cache[cacheKey] = (DateTime.UtcNow, build);
             return build;
         }
@@ -240,6 +264,102 @@ public sealed class OpggCounters : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    public async Task<List<AugmentStat>> AramAugmentsAsync(int championId, CancellationToken ct)
+    {
+        var cacheKey = $"augments|{championId}";
+        if (_cache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow - cached.At < CacheTime)
+            return (List<AugmentStat>)cached.Value;
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var args = new Dictionary<string, object>
+            {
+                ["champion_id"] = championId,
+                ["lang"] = "hu_HU",
+                ["desired_output_fields"] = new[] { "data.augments[].{desc,id,name,performance,popular,tier}" }
+            };
+            var result = await CallAsync("lol_list_aram_augments", args, ct);
+            DebugWriter?.Invoke($"opgg-augments-{championId}", result);
+            var text = TextOf(result);
+            var list = new List<AugmentStat>();
+            var header = Regex.Match(text, @"class (\w+):\s*[\w,]*performance");
+            if (header.Success)
+            {
+                foreach (var rec in Records(text, header.Groups[1].Value))
+                {
+                    double D(string k) => double.TryParse(rec.GetValueOrDefault(k), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 0;
+                    string S(string k) => Regex.Unescape((rec.GetValueOrDefault(k) ?? "").Trim('"'));
+                    var name = S("name");
+                    if (name.Length > 0) list.Add(new AugmentStat(name, StripTags(S("desc")), (int)D("tier"), D("performance"), D("popular")));
+                }
+            }
+            _cache[cacheKey] = (DateTime.UtcNow, list);
+            return list;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    static string StripTags(string s) => Regex.Replace(Regex.Replace(s, "<[^>]+>", ""), @"\s+", " ").Trim();
+
+    public static List<Dictionary<string, string>> Records(string text, string className)
+    {
+        var result = new List<Dictionary<string, string>>();
+        var header = Regex.Match(text, $@"class {Regex.Escape(className)}:\s*([\w,]+)");
+        if (!header.Success) return result;
+        var fields = header.Groups[1].Value.Split(',').Select(f => f.Trim()).ToList();
+        var marker = className + "(";
+        var pos = 0;
+        while ((pos = text.IndexOf(marker, pos, StringComparison.Ordinal)) >= 0)
+        {
+            if (pos > 0 && (char.IsLetterOrDigit(text[pos - 1]) || text[pos - 1] == '_'))
+            {
+                pos += marker.Length;
+                continue;
+            }
+            var start = pos + marker.Length;
+            var values = new List<string>();
+            var depth = 0;
+            var inString = false;
+            var current = new System.Text.StringBuilder();
+            var i = start;
+            for (; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (inString)
+                {
+                    current.Append(c);
+                    if (c == '\\' && i + 1 < text.Length) current.Append(text[++i]);
+                    else if (c == '"') inString = false;
+                    continue;
+                }
+                if (c == '"') { inString = true; current.Append(c); continue; }
+                if (c is '(' or '[' or '{') depth++;
+                if (c is ')' or ']' or '}')
+                {
+                    if (depth == 0 && c == ')') break;
+                    depth--;
+                }
+                if (c == ',' && depth == 0)
+                {
+                    values.Add(current.ToString().Trim());
+                    current.Clear();
+                    continue;
+                }
+                current.Append(c);
+            }
+            values.Add(current.ToString().Trim());
+            pos = i;
+            if (values.Count != fields.Count) continue;
+            var rec = new Dictionary<string, string>();
+            for (var k = 0; k < fields.Count; k++) rec[fields[k]] = values[k];
+            result.Add(rec);
+        }
+        return result;
     }
 
     public static List<MetaStat> ParseMeta(string text, string className)

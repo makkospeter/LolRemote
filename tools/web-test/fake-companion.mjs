@@ -63,6 +63,11 @@ function snapshot() {
     spells,
     champSelect: cs && {
       timerPhase: cs.timerPhase,
+      modeKind: cs.modeKind || 'classic',
+      modeTitle: cs.modeTitle || null,
+      laneBased: !cs.modeKind || cs.modeKind === 'classic',
+      runesDisabled: cs.modeKind === 'mayhem',
+      random: cs.random ? { ...cs.random, bench: cs.random.bench.map(id => ({ championId: id, name: nameOf(id), priority: false })) } : null,
       myChampionId: myChamp,
       myIntentId: cs.myTeam[2].intentId,
       myPosition: 'mid',
@@ -185,7 +190,32 @@ function execute(msg) {
       const items = pool.map((id, i) => ({ championId: id, name: nameOf(id), winRate: 56 - i * 0.7, games: 900 - i * 60, pickable: i % 3 !== 2 }));
       return { data: { championId: msg.championId, championName: name, isMe: msg.championId === me, position: 'mid', items, source: 'OP.GG' } };
     }
+    case 'reroll':
+      if (!cs?.random) return { error: 'Ebben a módban nincs újradobás.' };
+      if (cs.random.rerollsRemaining <= 0) return { error: 'Elfogyott az újradobásod.' };
+      cs.random.rerollsRemaining--;
+      cs.random.bench.push(cs.myTeam[2].championId);
+      cs.myTeam[2].championId = 25;
+      return {};
+    case 'bench-swap': {
+      if (!cs?.random) return { error: 'Nincs pad.' };
+      const i = cs.random.bench.indexOf(msg.championId);
+      if (i < 0) return { error: 'Már nincs a padon.' };
+      cs.random.bench[i] = cs.myTeam[2].championId;
+      cs.myTeam[2].championId = msg.championId;
+      return {};
+    }
     case 'build': {
+      if (cs?.modeKind === 'mayhem') {
+        const id = cs.myTeam[2].championId;
+        return { data: {
+          championId: id, championName: nameOf(id), position: 'ARAM: Mayhem', opponentId: 0, runes: [], runesDisabled: true, modeKind: 'mayhem',
+          spells: [{ ids: [4, 32], names: 'Flash + Mark', games: 9000, winRate: 52.2 }],
+          items: [{ ids: [1, 2, 3], names: 'Luden → Shadowflame → Rabadon', games: 3000, winRate: 55.1 }],
+          augments: [{ name: 'Ütős varázslat', description: 'Több sebzés a képességekkel.', tier: 3, performance: 71.2, popular: 0.4 }, { name: 'Tank mód', description: 'Plusz életerő.', tier: 3, performance: 68.1, popular: 0.2 }],
+          source: 'OP.GG'
+        } };
+      }
       const opponentId = msg.opponentId || 99;
       return { data: {
         championId: 103, championName: 'Ahri', position: 'mid',
@@ -287,6 +317,18 @@ const server = http.createServer((req, res) => {
     world.readyResponse = 'None';
     if (world.phase !== 'ChampSelect') world.cs = null;
     if (world.phase === 'ReadyCheck') addLog('MEGVAN A MECCS! Fogadd el!', 'Yellow');
+    broadcast();
+    res.end('ok');
+    return;
+  }
+  if (url.pathname === '/__test/mayhem') {
+    world.phase = 'ChampSelect';
+    world.cs = freshChampSelect();
+    Object.assign(world.cs, {
+      timerPhase: 'BAN_PICK', action: null, modeKind: 'mayhem', modeTitle: 'ARAM: Mayhem', myBans: [], theirBans: [], swapOptions: [],
+      random: { benchEnabled: true, bench: [1, 99], allowRerolling: true, rerollsRemaining: 1 }
+    });
+    world.cs.myTeam.forEach((m, i) => { m.championId = [64, 157, 22, 53, 412][i]; m.intentId = 0; m.position = ''; });
     broadcast();
     res.end('ok');
     return;

@@ -167,6 +167,12 @@ public sealed class LcuConnection : IAsyncDisposable
     public Task<HttpResponseMessage> PatchAsync(string path, object body, CancellationToken ct = default) =>
         _http.PatchAsync(path, ToContent(body), ct);
 
+    public Task<HttpResponseMessage> DeleteAsync(string path, CancellationToken ct = default) =>
+        _http.DeleteAsync(path, ct);
+
+    public Task<HttpResponseMessage> GetRawAsync(string path, CancellationToken ct = default) =>
+        _http.GetAsync(path, ct);
+
     public Task<HttpResponseMessage> PutAsync(string path, object body, CancellationToken ct = default) =>
         _http.PutAsync(path, ToContent(body), ct);
 

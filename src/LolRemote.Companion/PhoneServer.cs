@@ -592,6 +592,10 @@ public sealed class PhoneServer
                 return await c.CountersAsync((int)Num(message, "championId"));
             case "build":
                 return await c.BuildAsync((int)Num(message, "opponentId"));
+            case "reroll":
+                return (await c.RerollAsync(), null);
+            case "bench-swap":
+                return (await c.BenchSwapAsync((int)Num(message, "championId")), null);
             case "ban-suggestions":
                 return await c.BanSuggestionsAsync();
             case "champions":

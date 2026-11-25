@@ -32,6 +32,36 @@ public sealed class ChampSelectController
     public bool IsCustomGame { get; private set; }
     public string? QueueName { get; private set; }
 
+    public string ModeKind
+    {
+        get
+        {
+            var mode = (GameMode ?? "").ToUpperInvariant();
+            var queue = (QueueName ?? "").ToLowerInvariant();
+            if (mode == "PRACTICETOOL") return "practice";
+            if (mode == "KIWI" || queue.Contains("mayhem") || queue.Contains("káosz")) return "mayhem";
+            if (mode == "CHERRY" || queue.Contains("arena") || queue.Contains("aréna")) return "arena";
+            if (mode is "URF" or "ARURF" || queue.Contains("urf")) return "urf";
+            if (mode == "NEXUSBLITZ" || queue.Contains("nexus")) return "nexus";
+            if (mode == "ONEFORALL" || queue.Contains("one for all")) return "oneforall";
+            if (mode == "ARAM" || MapId == 12) return "aram";
+            if (mode is "CLASSIC" or "SWIFTPLAY" or "JADE" || MapId == 11) return "classic";
+            return "other";
+        }
+    }
+
+    public string OpggMode => ModeKind switch
+    {
+        "aram" or "mayhem" => "aram",
+        "urf" => "urf",
+        "nexus" => "nexus_blitz",
+        _ => "ranked"
+    };
+
+    public bool LaneBased => ModeKind is "classic" && MyOpggPosition is not null;
+
+    public bool RunesDisabled => ModeKind == "mayhem";
+
     public string? ModeLabel =>
         GameMode == "PRACTICETOOL" ? "Practice Tool"
         : IsCustomGame ? "Egyéni játék"
@@ -854,6 +884,7 @@ public sealed class ChampSelectController
     public async Task<(string? Error, object? Data)> BanSuggestionsAsync()
     {
         if (Session is null) return ("Ban javaslatot champ selectben lehet kérni.", null);
+        if (ModeKind is not ("classic" or "practice")) return ($"{ModeTitle} módban a rolera épülő ban javaslat nem értelmezhető.", null);
         if (Counters is null) return ("Az OP.GG adatok nem érhetők el.", null);
         var intent = MyIntentId();
         var position = MyOpggPosition;
@@ -993,6 +1024,7 @@ public sealed class ChampSelectController
         if (Counters is null) return ("Az OP.GG adatok nem érhetők el.", null);
 
         var name = ChampionName(champion);
+        if (!LaneBased && ModeKind != "practice") return await ModeBuildAsync(champion, name);
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -1054,6 +1086,123 @@ public sealed class ChampSelectController
         {
             return ($"OP.GG ajánlás nem érhető el: {ex.Message}", null);
         }
+    }
+
+    async Task<(string? Error, object? Data)> ModeBuildAsync(int champion, string name)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        MatchupData? general = null;
+        string? buildError = null;
+        try
+        {
+            general = await Counters!.GeneralBuildAsync(champion, name, AliasOf(champion), null, timeout.Token, OpggMode);
+        }
+        catch (Exception ex)
+        {
+            buildError = ex.Message;
+        }
+        List<AugmentStat> augments = new();
+        if (ModeKind == "mayhem")
+        {
+            try
+            {
+                augments = await Counters!.AramAugmentsAsync(champion, timeout.Token);
+            }
+            catch (Exception)
+            {
+            }
+        }
+        if (general is null && augments.Count == 0) return ($"OP.GG ajánlás nem érhető el: {buildError}", null);
+
+        var spells = (general?.Spells ?? new List<SpellStat>())
+            .Where(sp => !(ModeKind == "mayhem" && sp.Ids.Contains(3)))
+            .Take(3)
+            .Select(sp => new
+            {
+                ids = sp.Ids,
+                names = string.Join(" + ", sp.Ids.Select(id => SpellName(id))),
+                games = sp.Games,
+                winRate = sp.Games == 0 ? 0 : Math.Round(100.0 * sp.Wins / sp.Games, 1)
+            }).ToList();
+        var runes = RunesDisabled ? new List<object>() : (general?.Runes ?? new List<RuneStat>())
+            .Take(3)
+            .Select(r => (object)new
+            {
+                primaryStyleId = r.PrimaryStyleId,
+                subStyleId = r.SubStyleId,
+                perkIds = r.PerkIds,
+                title = PerkName(r.PerkIds[0]),
+                detail = $"{StyleName(r.PrimaryStyleId)} / {StyleName(r.SubStyleId)} · {string.Join(", ", r.PerkIds.Skip(1).Take(5).Select(PerkName))}",
+                games = r.Games,
+                winRate = r.Games == 0 ? 0 : Math.Round(100.0 * r.Wins / r.Games, 1)
+            }).ToList();
+        var items = (general?.CoreItems ?? new List<ItemSetStat>()).Take(2).Select(i => new
+        {
+            ids = i.Ids,
+            names = string.Join(" → ", i.Names),
+            games = i.Games,
+            winRate = i.Games == 0 ? 0 : Math.Round(100.0 * i.Wins / i.Games, 1)
+        }).ToList();
+        var maxPopular = augments.Count == 0 ? 0 : augments.Max(a => a.Popular);
+        var augmentList = augments
+            .Where(a => a.Popular >= Math.Max(0.03, maxPopular * 0.15))
+            .OrderByDescending(a => a.Performance)
+            .Take(8)
+            .Select(a => new { name = a.Name, description = a.Description, tier = a.Tier, performance = Math.Round(a.Performance, 2), popular = Math.Round(a.Popular, 2) })
+            .ToList();
+        return (null, new
+        {
+            championId = champion,
+            championName = name,
+            position = ModeTitle,
+            opponentId = 0,
+            opponentName = (string?)null,
+            opponentGuessed = false,
+            tip = (string?)null,
+            playStyle = (string?)null,
+            spells,
+            runes,
+            runesDisabled = RunesDisabled,
+            items,
+            augments = augmentList,
+            modeKind = ModeKind,
+            source = "OP.GG"
+        });
+    }
+
+    public string ModeTitle => ModeKind switch
+    {
+        "mayhem" => "ARAM: Mayhem",
+        "aram" => "ARAM",
+        "urf" => "URF",
+        "nexus" => "Nexus Blitz",
+        "arena" => "Arena",
+        "oneforall" => "One for All",
+        _ => ModeLabel ?? "Játékmód"
+    };
+
+    public async Task<string?> RerollAsync()
+    {
+        var s = Session;
+        if (s is null) return "Nincs champ select.";
+        if (!s.AllowRerolling) return "Ebben a módban nincs újradobás.";
+        if (s.RerollsRemaining <= 0) return "Elfogyott az újradobásod.";
+        EventLog.WriteFile("[lcu] reroll");
+        var error = await SendAsync(_lcu.PostAsync("/lol-champ-select/v1/session/my-selection/reroll"));
+        if (error is null) _log.Add("Újradobás kérve.", ConsoleColor.Cyan);
+        return error;
+    }
+
+    public async Task<string?> BenchSwapAsync(int championId)
+    {
+        var s = Session;
+        if (s is null) return "Nincs champ select.";
+        if (!s.BenchEnabled) return "Ebben a módban nincs pad (bench).";
+        if (s.BenchChampions?.Any(b => b.ChampionId == championId) != true) return $"{ChampionName(championId)} már nincs a padon.";
+        EventLog.WriteFile($"[lcu] bench swap champion={championId}");
+        var error = await SendAsync(_lcu.PostAsync($"/lol-champ-select/v1/session/bench/swap/{championId}"));
+        if (error is null) _log.Add($"Csere a padról: {ChampionName(championId)}", ConsoleColor.Cyan);
+        return error;
     }
 
     public Task<string?> MockStartQueueAsync() => SendAsync(_lcu.PostAsync("/lolremote-mock/queue"));
@@ -1212,6 +1361,17 @@ public sealed class ChampSelectController
                     championName = MyIntentId() == 0 ? null : ChampionName(MyIntentId())
                 } : null,
                 myIntentId = MyIntentId(),
+                modeKind = ModeKind,
+                modeTitle = ModeTitle,
+                laneBased = LaneBased,
+                runesDisabled = RunesDisabled,
+                random = s.BenchEnabled || s.AllowRerolling ? new
+                {
+                    benchEnabled = s.BenchEnabled,
+                    bench = (s.BenchChampions ?? new List<BenchChampion>()).Select(b => new { championId = b.ChampionId, name = ChampionName(b.ChampionId), priority = b.IsPriority }).ToList(),
+                    allowRerolling = s.AllowRerolling,
+                    rerollsRemaining = s.RerollsRemaining
+                } : null,
                 myPosition = MyOpggPosition is { } myPos ? OpggCounters.PositionText(myPos) : null,
                 allyHovers = AllyHoveredIds().ToList(),
                 myTeam = s.MyTeam.Select(m => new

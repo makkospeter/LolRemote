@@ -59,6 +59,18 @@ public class ChampSelectSession
     public SessionBans? Bans { get; set; }
     public List<SwapEntry>? Trades { get; set; }
     public List<SwapEntry>? PickOrderSwaps { get; set; }
+    public bool BenchEnabled { get; set; }
+    public List<BenchChampion>? BenchChampions { get; set; }
+    public bool AllowRerolling { get; set; }
+    public long RerollsRemaining { get; set; }
+    public bool AllowDuplicatePicks { get; set; }
+    public bool IsCustomGame { get; set; }
+}
+
+public class BenchChampion
+{
+    public int ChampionId { get; set; }
+    public bool IsPriority { get; set; }
 }
 
 public class RunePage
